@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080c12">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="A股雷达">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <title>A股雷达 · StockLens</title>
+  <meta name="description" content="A股实时行情、板块温度、可解释因子评分与每日观察名单。仅用于个人研究，不构成投资建议。">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b111b'/%3E%3Ccircle cx='32' cy='32' r='17' fill='none' stroke='%23f4c95d' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='8' fill='none' stroke='%235cc8ff' stroke-width='3'/%3E%3Cpath d='M32 32 L50 18' stroke='%23ff5c6c' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css?v=0.4.1">
+</head>
+<body>
+  <svg class="svg-sprite" aria-hidden="true">
+    <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></symbol>
+    <symbol id="i-crown" viewBox="0 0 24 24"><path d="M3 18h18M4 8l4 4 4-7 4 7 4-4v7H4Z"/><path d="M7 21h10"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16.5H6.5A2.5 2.5 0 0 0 4 22Z"/><path d="M4 5.5v13"/><path d="M8 7h8M8 10.5h6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m5 5 14 14M19 5 5 19"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 4v16M4 12h16"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-up-right" viewBox="0 0 24 24"><path d="M7 17 17 7M8 7h9v9"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2.8 20h18.4Z"/><path d="M12 9v5M12 17.2v.1"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4.5 6v5.5c0 4.6 3 8.1 7.5 9.5 4.5-1.4 7.5-4.9 7.5-9.5V6Z"/><path d="m8.8 12 2.2 2.2 4.3-4.4"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13"/><path d="M10 11v5M14 11v5"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V10M10 20V5M16 20v-7M22 20H2"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.5 2"/></symbol>
+  </svg>
+
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand" data-route="overview" role="button" tabindex="0">
+        <div class="brand-mark">
+          <span class="ring ring-one"></span>
+          <span class="ring ring-two"></span>
+          <span class="brand-core"></span>
+          <span class="brand-sweep"></span>
+        </div>
+        <div class="brand-text">
+          <strong>A股雷达</strong>
+          <small>STOCKLENS</small>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="主导航">
+        <button class="nav-item active" data-route="overview">
+          <svg class="icon"><use href="#i-overview"></use></svg><span>市场总览</span><em>01</em>
+        </button>
+        <button class="nav-item" data-route="leaders">
+          <svg class="icon"><use href="#i-crown"></use></svg><span>龙头雷达</span><em>02</em>
+        </button>
+        <button class="nav-item" data-route="picks">
+          <svg class="icon"><use href="#i-target"></use></svg><span>今日候选</span><em>03</em>
+        </button>
+        <button class="nav-item" data-route="watch">
+          <svg class="icon"><use href="#i-eye"></use></svg><span>自选监控</span><em>04</em>
+        </button>
+        <button class="nav-item" data-route="method">
+          <svg class="icon"><use href="#i-book"></use></svg><span>方法与风险</span><em>05</em>
+        </button>
+      </nav>
+
+      <div class="sidebar-section">
+        <div class="sidebar-label">数据连接</div>
+        <div class="source-line"><span class="live-dot" id="sourceDot"></span><span>东方财富公开行情</span><b>L1</b></div>
+        <p class="micro">非 Level-2，约 3–10 秒延迟。数据仅作研究参考。</p>
+      </div>
+
+      <div class="sidebar-section market-mini">
+        <div class="sidebar-label">当前时段</div>
+        <div class="market-status" id="sidebarStatus"><span class="status-dot"></span><strong>加载中</strong><small>--:--</small></div>
+        <div class="mini-stats">
+          <div><span>上涨</span><b class="up" id="miniUp">--</b></div>
+          <div><span>下跌</span><b class="down" id="miniDown">--</b></div>
+          <div><span>成交</span><b id="miniAmount">--</b></div>
+        </div>
+      </div>
+
+      <div class="sidebar-bottom">
+        <div class="research-badge"><svg class="icon"><use href="#i-shield"></use></svg><span>研究工具 · 不自动交易</span></div>
+        <p class="micro disclaimer">不构成投资建议。股市有风险，决策需独立判断。A股 T+1，注意涨跌停与流动性。</p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="page-heading">
+          <div class="eyebrow" id="pageEyebrow">MARKET PULSE</div>
+          <h1 id="pageTitle">市场总览</h1>
+        </div>
+        <div class="topbar-actions">
+          <div class="search-box" id="searchBox">
+            <svg class="icon"><use href="#i-search"></use></svg>
+            <input id="globalSearch" type="search" placeholder="搜索代码 / 名称" autocomplete="off" spellcheck="false" aria-label="搜索股票">
+            <div class="search-results hidden" id="searchResults"></div>
+          </div>
+          <button class="live-toggle active" id="liveToggle" title="1 秒刷新；行情源自身延迟仍存在" aria-label="切换低延迟模式">
+            <span class="live-dot"></span><span id="liveText">1s 刷新</span>
+          </button>
+          <button class="icon-btn" id="refreshBtn" title="刷新数据" aria-label="刷新数据">
+            <svg class="icon"><use href="#i-refresh"></use></svg>
+          </button>
+          <div class="clock-box">
+            <strong id="clock">--:--:--</strong>
+            <small>北京时间</small>
+          </div>
+        </div>
+      </header>
+
+      <div class="notice hidden" id="globalNotice"></div>
+      <div id="viewRoot" class="view-root"></div>
+
+      <footer class="footer">
+        <span>A股雷达 · StockLens v0.4</span>
+        <span>数据：东方财富公开接口 · 模型：可解释因子 + 时间切分验证</span>
+        <span>仅用于个人研究，不构成任何投资建议或收益承诺。</span>
+      </footer>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <div class="modal hidden" id="modal" role="dialog" aria-modal="true" aria-label="个股详情">
+    <div class="modal-backdrop" data-action="close-modal"></div>
+    <div class="modal-panel" id="modalPanel">
+      <button class="modal-close" data-action="close-modal" aria-label="关闭">
+        <svg class="icon"><use href="#i-close"></use></svg>
+      </button>
+      <div id="modalContent"></div>
+    </div>
+  </div>
+
+  <script src="vendor/echarts.min.js"></script>
+  <script src="app.js?v=0.4.1"></script>
+</body>
+</html>
