@@ -5,5 +5,9 @@ __pycache__/
 data/cache/
 data/watchlist.json
 data/*.tmp
+.github-token
+.github-token.txt
+github-token.txt
+*.token
 .DS_Store
 Thumbs.db

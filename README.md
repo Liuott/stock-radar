@@ -46,7 +46,8 @@
 ### 运行
 
 ```powershell
-cd E:\代码\stock-radar
+git clone https://github.com/Liuott/stock-radar.git
+cd stock-radar
 python -m pip install -r requirements.txt
 python server.py --port 8765 --warm --open
 ```
@@ -138,7 +139,16 @@ stock.example.com {
 
 公网部署前请确认：行情接口使用条款、服务器出口网络能访问东方财富、访问日志与隐私、以及是否需要更强的身份验证。**这是个人研究工具，不建议直接开放给公众使用。**
 
+## 安全与隐私
 
+- 仓库**不包含** `data/`、自选股、行情缓存、Token、浏览器数据或任何公网隧道配置。
+- README 中的 `127.0.0.1` 和 `0.0.0.0` 是**程序绑定地址**，不是你的公网地址，也不能用来访问你的电脑。
+- 局域网 IP 只在运行 `run-lan.bat` 时由程序临时打印，不会写进仓库；README 使用 `192.168.x.x` 占位。
+- `run-lan.bat` 会强制要求密码；Basic Auth 在 HTTP 下是明文，只适合可信局域网。
+- 公网部署必须使用 HTTPS 反向代理，不要把 `8765` 直接端口转发到公网。
+- GitHub 仓库只是源代码，不是在线服务；GitHub Pages 不能运行 Python 后端。要在线使用，需要自己的 VPS 或局域网主机。
+
+## 页面
 
 ### 市场总览
 
@@ -299,6 +309,7 @@ stock-radar/
 ├─ requirements.txt
 ├─ run.bat / run.ps1         # 仅本机
 ├─ run-lan.bat / run-lan.ps1 # 局域网 + 密码
+├─ LICENSE                   # MIT
 ├─ README.md
 └─ DESIGN.md
 ```
@@ -354,6 +365,12 @@ A：可以。`app/providers/eastmoney.py` 是适配器边界，按相同字段�
 - A 股 T+1、涨跌停、停牌、滑点、手续费、流动性都会改变实际结果。
 - 不要使用生活必需资金、借贷或高杠杆参与。
 - 训练池选择偏差、10 日标签重叠、未覆盖公告/新闻/政策/社区情绪，是当前版本的明确局限。
+
+## 许可证
+
+本项目使用 **MIT License**，见 [LICENSE](LICENSE)。
+
+第三方组件：前端图表使用 [Apache ECharts](https://echarts.apache.org/)（Apache-2.0）；行情数据归东方财富及相关数据源所有，使用时请遵守其条款。
 
 ## 参考与借鉴
 
