@@ -14,7 +14,7 @@ const PAGE_META = {
 };
 
 const PROFILE_LABELS = { conservative: '稳健', balanced: '均衡', aggressive: '进攻' };
-const CONFIDENCE_LABELS = { high: '模型高置信度', medium: '模型中置信度', low: '模型低置信度' };
+const CONFIDENCE_LABELS = { high: '信号一致性较高', medium: '信号中性', low: '信号一致性偏弱' };
 
 const state = {
   route: 'overview',
@@ -576,8 +576,8 @@ function renderOverview() {
   const previewMetrics = state.picks?.model?.metrics;
   const previewHealth = state.picks ? `
     <div class="preview-health">
-      <div><span>验证 AUC</span><b>${previewMetrics?.auc ?? '—'}</b><small>时间切分</small></div>
-      <div><span>Top10% 命中</span><b>${previewMetrics?.top_decile_hit ? (previewMetrics.top_decile_hit * 100).toFixed(1) + '%' : '—'}</b><small>未来10日</small></div>
+      <div><span>日度截面 AUC</span><b>${previewMetrics?.daily_auc ?? '—'}</b><small>池化 ${previewMetrics?.auc ?? '—'}</small></div>
+      <div><span>Rank IC</span><b>${previewMetrics?.rank_ic ?? '—'}</b><small>${previewMetrics?.ic_days ?? 0} 个交易日</small></div>
       <div><span>通过筛选</span><b>${picks.length}<i> / ${state.picks.candidateCount ?? '—'}</i></b><small>候选池</small></div>
     </div>
     <div class="preview-note">${icon('shield')}<span>不足 2 只时不强行凑数；空仓与降低仓位也是有效决策。</span></div>` : '';
@@ -816,7 +816,10 @@ function renderPicks() {
   const model = data.model || {};
   const metrics = model.metrics || {};
   const profiles = data.profiles || Object.entries(PROFILE_LABELS).map(([key, label]) => ({ key, label }));
-  const modelWeak = model.confidence === 'low' || (metrics.auc && metrics.auc < 0.53);
+  const dailyAuc = metrics.daily_auc;
+  const rankIc = metrics.rank_ic;
+  const icDays = metrics.ic_days;
+  const modelWeak = !metrics.usable || (dailyAuc !== undefined && dailyAuc !== null && Number(dailyAuc) < 0.52);
   const baseRate = Number(data.baseRate || metrics.base_rate || 0.5);
   const noticeClass = picks.length === 0 ? ' danger' : '';
   const notice = picks.length === 0
@@ -824,7 +827,7 @@ function renderPicks() {
     : data.noPickReason
       ? `<div class="notice${noticeClass}">${icon('alert')}<div>${esc(data.noPickReason)}</div></div>`
       : modelWeak
-        ? `<div class="notice">${icon('alert')}<div>模型处于弱信号区（验证 AUC ${metrics.auc ?? '—'}），候选概率接近历史基准 ${(baseRate * 100).toFixed(1)}%。请把候选当作观察名单，而不是买入信号。</div></div>`
+        ? `<div class="notice">${icon('alert')}<div>模型未通过可用性门槛：日度截面 AUC ${dailyAuc ?? '—'}，Rank IC ${rankIc ?? '—'}（${icDays ?? 0} 个交易日）；池化 AUC ${metrics.auc ?? '—'} 只作参考。候选当前按规则质量 + 风险排序，不按模型概率排序。</div></div>`
         : '';
   const modelConfidence = CONFIDENCE_LABELS[model.confidence] || '—';
   const learning = data.learning || {};
@@ -843,7 +846,7 @@ function renderPicks() {
   const paperStrip = `
     <div class="paper-strip">
       <div class="paper-strip-main"><span>1 万元模拟盘</span><strong class="${paperPnl >= 0 ? 'up' : 'down'}">${paperPnl >= 0 ? '+' : ''}${fmtNum(paperPnl, 2)}</strong><small>累计 · 权益 ${fmtNum(paper.equity || 10000, 2)}</small></div>
-      <div class="paper-strip-note">${paperLatest ? `最近结算 ${esc(paperLatest.signalDate)}：${paperLatest.totalReturnPct >= 0 ? '+' : ''}${fmtNum(paperLatest.totalReturnPct, 2)}%` : paperPending ? `已记录 ${esc(paperPending.signalDate)} 的候选，等次日开盘/收盘结算` : '生成候选后自动记录模拟交易'}</div>
+      <div class="paper-strip-note">${paperLatest ? `最近结算 ${esc(paperLatest.signalDate)}：${paperLatest.totalReturnPct >= 0 ? '+' : ''}${fmtNum(paperLatest.totalReturnPct, 2)}%` : paperPending ? `已记录 ${esc(paperPending.signalDate)} 的候选，等下一交易日收盘结算` : '生成候选后自动记录模拟交易'}</div>
       <button class="text-btn" data-route="learning">查看模拟记录 ${icon('arrow')}</button>
     </div>`;
   const usageGuide = `
@@ -886,7 +889,14 @@ function renderPicks() {
     const risks = (pick.risks || []).slice(0, 2).map((text) => `<span class="chip warn">${esc(text)}</span>`).join('');
     const flags = (pick.flags || []).map((flag) => `<span class="chip bad">${esc(flag)}</span>`).join('');
     const weakEdge = Number(pick.relative_edge || 0) < 0.005;
-    const edgeChip = weakEdge ? '<span class="chip warn">模型优势微弱</span>' : '';
+    const edgeChip = !metrics.usable
+      ? '<span class="chip warn">模型未通过门槛，按规则排序</span>'
+      : weakEdge
+        ? '<span class="chip warn">模型优势微弱</span>'
+        : '';
+    const probabilityLine = metrics.usable
+      ? `${esc(model.probabilityLabel || '10日上涨概率')} <b>${fmtNum(pick.probability_pct, 1)}%</b> · 基准 ${(baseRate * 100).toFixed(1)}% · 相对 ${edgeText}`
+      : `规则分 <b>${fmtNum(pick.rule_score, 1)}</b> · 风险分 <b>${fmtNum(pick.risk_score, 1)}</b> · 模型未通过门槛`;
     const learnAdjust = Number(pick.probability_adjustment_pp || 0);
     const learnChip = Math.abs(learnAdjust) >= 0.1 ? `<span class="chip">学习校准 ${learnAdjust >= 0 ? '+' : ''}${learnAdjust.toFixed(1)}pp</span>` : '';
     const edgeText = Number.isFinite(Number(pick.relative_edge)) ? `${Number(pick.relative_edge) >= 0 ? '+' : ''}${(Number(pick.relative_edge) * 100).toFixed(1)}pp` : '—';
@@ -897,7 +907,7 @@ function renderPicks() {
           <span class="pick-rank">${String(pick.rank).padStart(2, '0')}</span>
           <div class="pick-title">
             <h3>${esc(pick.name)} <span>${esc(pick.code)}</span></h3>
-            <p>${esc(pick.industry)} · ${esc(model.probabilityLabel || '10日上涨概率')} <b>${fmtNum(pick.probability_pct, 1)}%</b> · 基准 ${(baseRate * 100).toFixed(1)}% · 相对 ${edgeText}</p>
+            <p>${esc(pick.industry)} · ${probabilityLine}</p>
           </div>
           <div class="score-orb" style="--score:${clamp(Number(pick.score) || 0, 0, 100)}"><strong>${fmtNum(pick.score, 0)}</strong><small>综合</small></div>
         </div>
@@ -950,7 +960,7 @@ function renderPicks() {
         <div class="profile-tabs">
           ${profiles.map((profile) => `<button class="profile-tab ${profile.key === state.profile ? 'active' : ''}" data-profile="${esc(profile.key)}">${esc(profile.label)}</button>`).join('')}
         </div>
-        <div class="model-health"><span class="health-dot"></span>验证 AUC <b>${metrics.auc ?? '—'}</b> · 样本 <b>${fmtCompact(metrics.validation_samples || data.sampleCount)}</b> · ${esc(modelConfidence)}</div>
+        <div class="model-health"><span class="health-dot"></span>日度截面 AUC <b>${dailyAuc ?? '—'}</b> · Rank IC <b>${rankIc ?? '—'}</b> · ${modelWeak ? '模型未通过门槛' : esc(modelConfidence)}</div>
       </div>
       ${usageGuide}
       ${learningStrip}
@@ -969,25 +979,27 @@ function renderPicks() {
       <article class="card model-card">
         <div class="card-head">
           <div><div class="eyebrow">MODEL HEALTH</div><h2>模型体检与验证</h2></div>
-          <span class="badge ${modelWeak ? 'cold' : 'gold'}">${modelWeak ? '弱信号' : '可用信号'} · ${esc(model.method || '')}</span>
+          <span class="badge ${modelWeak ? 'cold' : 'gold'}">${modelWeak ? '未通过可用性门槛' : '可用信号'} · ${esc(model.method || '')}</span>
         </div>
         <div class="model-metrics">
-          <div class="metric"><span>验证 AUC</span><b>${metrics.auc ?? '—'}</b><small>1.0 为完美，0.5 接近随机</small></div>
+          <div class="metric"><span>日度截面 AUC</span><b>${dailyAuc ?? '—'}</b><small>池化 AUC ${metrics.auc ?? '—'} · ${icDays ?? 0} 日</small></div>
+          <div class="metric"><span>Rank IC</span><b>${rankIc ?? '—'}</b><small>截面选股相关性 · ICIR ${metrics.ic_ir ?? '—'}</small></div>
           <div class="metric"><span>Top 10% 命中率</span><b>${metrics.top_decile_hit ? (metrics.top_decile_hit * 100).toFixed(1) + '%' : '—'}</b><small>验证集未来10日上涨比例</small></div>
-          <div class="metric"><span>基准上涨率</span><b>${metrics.base_rate ? (metrics.base_rate * 100).toFixed(1) + '%' : '—'}</b><small>同期验证样本基准</small></div>
-          <div class="metric"><span>Top 10% 超额</span><b class="${Number(metrics.edge) >= 0 ? 'up' : 'down'}">${metrics.edge !== undefined ? (metrics.edge * 100).toFixed(2) + 'pp' : '—'}</b><small>相对基准的未来10日均值</small></div>
+          <div class="metric"><span>Top 10% 超额</span><b class="${Number(metrics.edge) >= 0 ? 'up' : 'down'}">${metrics.edge !== undefined ? (metrics.edge * 100).toFixed(2) + 'pp' : '—'}</b><small>基准上涨率 ${metrics.base_rate ? (metrics.base_rate * 100).toFixed(1) + '%' : '—'}</small></div>
         </div>
+        ${modelWeak ? `<div class="model-alert">${icon('alert')}<span>模型未通过门槛（日度 AUC ≥ 0.52 且 Rank IC ≥ 0.02）。候选排名已改为规则质量 + 风险，不再让弱模型分位参与。</span></div>` : ''}
         <div class="model-detail">
           <div>
             <div class="mini-title"><span class="dot"></span>标准化特征权重（正负方向）</div>
             <div class="feature-bars">${featureBars || '<p class="micro">模型不可用，仅展示规则评分。</p>'}</div>
-            <p class="model-note" style="margin-top:10px">训练：${fmtCompact(metrics.train_samples)} 条 · 验证：${fmtCompact(metrics.validation_samples)} 条 · ${esc(metrics.validation_from || '—')} → ${esc(metrics.validation_to || '—')}</p>
+            <p class="model-note" style="margin-top:10px">训练：${fmtCompact(metrics.train_samples)} 条 · 验证：${fmtCompact(metrics.validation_samples)} 条 · 净化 ${metrics.purge_days ?? 10} 日 · ${esc(metrics.validation_from || '—')} → ${esc(metrics.validation_to || '—')}</p>
           </div>
           <div class="model-note">
             <strong>怎么读这个模型</strong>
             <ul>
-              <li>概率是“未来10个交易日收盘上涨”的历史校准估计，不是保证。</li>
-              <li>候选还经过趋势、量能、波动与行业分散过滤；概率低不代表一定跌。</li>
+              <li><b>池化 AUC</b> 会把全市场同涨同跌日混在一起，不能单独代表选股能力；选股主要看 <b>日度截面 AUC / Rank IC</b>。</li>
+              <li>当前模型即使未通过门槛，也会保留在页面里做透明诊断，但不再参与最终排序。</li>
+              <li>概率仍是“未来10个交易日收盘上涨”的历史校准估计，不是保证；候选还会经过趋势、量能、波动与行业分散过滤。</li>
               <li>${esc(model.limitations || '模型存在选择偏差与样本重叠，验证结果可能偏乐观。')}</li>
             </ul>
           </div>
@@ -1190,7 +1202,7 @@ function renderLearning() {
     <tr>
       <td><div class="watch-name"><strong>${esc(position.name)}</strong><small>${esc(position.code)} · ${fmtNum(position.weightPct, 1)}%</small></div></td>
       <td><span class="learning-predicted">${fmtNum(position.allocation, 0)}</span></td>
-      <td>${paperLatest ? `<span class="learning-date">${fmtNum(position.entryOpen)} → ${fmtNum(position.exitClose)}</span>` : '<span class="micro">次日开盘</span>'}</td>
+      <td>${paperLatest ? `<span class="learning-date">${fmtNum(position.entryClose)} → ${fmtNum(position.exitClose)}</span>` : '<span class="micro">信号日收盘</span>'}</td>
       <td>${paperLatest ? `<span class="${pctClass(position.returnPct)}">${fmtPct(position.returnPct)}</span>` : '<span class="result-pill muted">待结算</span>'}</td>
       <td>${paperLatest ? `<span class="${Number(position.pnl) >= 0 ? 'up' : 'down'}">${fmtSigned(position.pnl)}</span>` : '—'}</td>
     </tr>`).join('');
@@ -1208,15 +1220,15 @@ function renderLearning() {
       </div>
       ${paperPositions.length ? `
         <div class="paper-table-wrap">
-          <div class="mini-title"><span class="dot"></span>${paperLatest ? `最近结算 ${esc(paperLatest.signalDate)} → ${esc(paperLatest.exitDate)}` : `已记录 ${esc(paperPending.signalDate)}，计划次日开盘买入、收盘结算`}</div>
+          <div class="mini-title"><span class="dot"></span>${paperLatest ? `最近结算 ${esc(paperLatest.signalDate)} → ${esc(paperLatest.exitDate)}` : `已记录 ${esc(paperPending.signalDate)}，信号日收盘买入、下一交易日收盘结算（T+1）`}</div>
           <table class="learning-table">
             <thead><tr><th>标的</th><th>分配金额</th><th>买入 → 卖出</th><th>收益</th><th>盈亏</th></tr></thead>
             <tbody>${paperRows}</tbody>
           </table>
-        </div>` : `<div class="learning-empty">${icon('chart')}<h3>${paper.expiredTrades ? '历史记录已过期' : '还没有模拟交易'}</h3><p>${paper.expiredTrades ? paper.expiredTrades + ' 条记录的信号日已超出可回溯的日K窗口，无法确认紧邻的次日 bar，已标记失效而不结算。' : '在“今日候选”生成候选后，系统会自动用 1 万元等权记录；次日开盘买入、收盘结算。'}</p><button class="ghost-btn" data-route="picks">去生成候选</button></div>`}
-      ${paperPending && paperLatest ? `<p class="micro" style="padding:0 18px 4px">另有 ${esc(paperPending.signalDate)} 的候选已记录，等待次日开盘/收盘结算。</p>` : ''}
-      <p class="micro" style="padding:0 18px 4px"><b style="color:var(--text-2);font-weight:500">系统决策：</b>均衡档候选，等权分配，最多 5 只；次日开盘买入，次日收盘计值。</p>
-      <p class="micro" style="padding:0 18px 15px">${esc(paper.note || '每日固定 10,000 元等权模拟；次日开盘买入、次日收盘计值；含 0.15% 估算成本。')}</p>
+        </div>` : `<div class="learning-empty">${icon('chart')}<h3>${paper.expiredTrades ? '历史记录已过期' : '还没有模拟交易'}</h3><p>${paper.expiredTrades ? paper.expiredTrades + ' 条记录的信号日已超出可回溯的日K窗口，无法确认紧邻的次日 bar，已标记失效而不结算。' : '在“今日候选”生成候选后，系统会自动用 1 万元等权记录；信号日收盘买入、下一交易日收盘结算。'}</p><button class="ghost-btn" data-route="picks">去生成候选</button></div>`}
+      ${paperPending && paperLatest ? `<p class="micro" style="padding:0 18px 4px">另有 ${esc(paperPending.signalDate)} 的候选已记录，等待下一交易日收盘结算。</p>` : ''}
+      <p class="micro" style="padding:0 18px 4px"><b style="color:var(--text-2);font-weight:500">系统决策：</b>均衡档候选，等权分配，最多 5 只；信号日收盘买入，下一交易日收盘计值（T+1）。</p>
+      <p class="micro" style="padding:0 18px 15px">${esc(paper.note || '每日固定 10,000 元等权模拟；信号日收盘买入、下一交易日收盘计值（T+1）；含 0.15% 估算成本。')}</p>
     </article>`;
   const hasSamples = Boolean(data.available && data.samples);
   const hitRate = data.hitRate !== null && data.hitRate !== undefined ? Number(data.hitRate) : null;
@@ -1372,14 +1384,14 @@ function renderMethod() {
           <div class="factor-table">${factors}</div>
         </article>
         <article class="card">
-          <div class="card-head"><div><div class="eyebrow">MODEL CARD</div><h2>模型体检</h2></div><span class="badge ${model.confidence === 'low' ? 'cold' : 'gold'}">${esc(CONFIDENCE_LABELS[model.confidence] || '—')}</span></div>
+          <div class="card-head"><div><div class="eyebrow">MODEL CARD</div><h2>模型体检</h2></div><span class="badge ${metrics.usable ? 'gold' : 'cold'}">${metrics.usable ? '可用信号' : '未通过门槛'}</span></div>
           <div class="model-metrics" style="grid-template-columns:1fr 1fr;padding-top:12px">
-            <div class="metric"><span>验证 AUC</span><b>${metrics.auc ?? '—'}</b><small>时间切分留出集</small></div>
+            <div class="metric"><span>日度截面 AUC</span><b>${metrics.daily_auc ?? '—'}</b><small>池化 ${metrics.auc ?? '—'} · ${metrics.ic_days ?? 0} 日</small></div>
+            <div class="metric"><span>Rank IC</span><b>${metrics.rank_ic ?? '—'}</b><small>ICIR ${metrics.ic_ir ?? '—'}</small></div>
             <div class="metric"><span>Top 10% 命中率</span><b>${metrics.top_decile_hit ? (metrics.top_decile_hit * 100).toFixed(1) + '%' : '—'}</b><small>未来10日上涨</small></div>
-            <div class="metric"><span>基准上涨率</span><b>${metrics.base_rate ? (metrics.base_rate * 100).toFixed(1) + '%' : '—'}</b><small>同期样本</small></div>
-            <div class="metric"><span>验证样本</span><b>${fmtCompact(metrics.validation_samples)}</b><small>${esc(metrics.validation_from || '—')} 起</small></div>
+            <div class="metric"><span>验证样本</span><b>${fmtCompact(metrics.validation_samples)}</b><small>净化 ${metrics.purge_days ?? 10} 日</small></div>
           </div>
-          <div class="model-note" style="padding:12px 18px 18px">${esc(model.method || 'L2 逻辑回归 + 时间切分验证')}<br>${esc(model.limitations || '')}</div>
+          <div class="model-note" style="padding:12px 18px 18px">${esc(model.method || 'L2 逻辑回归 + 净化时间切分验证')}<br>${esc(model.limitations || '')}</div>
         </article>
       </div>
 
@@ -1435,6 +1447,7 @@ function renderDetail(data) {
   const plan = data.plan || {};
   const features = data.features || {};
   const modelP = data.probability;
+  const modelUsable = Boolean(data.model_usable);
   const factors = (score.subscores || []).map((item) => `
     <div class="factor-mini-row">
       <span>${esc(item.label)}</span>
@@ -1453,7 +1466,7 @@ function renderDetail(data) {
     <div class="detail-head">
       <div class="detail-title">
         <h2>${esc(quote.name)} <span>${esc(quote.code)}</span></h2>
-        <p>${esc(quote.industry || '—')} · ${esc(data.profile?.label || '')}视角 · 模型10日概率 ${modelP ? (modelP * 100).toFixed(1) + '%' : '—'}${data.base_rate ? `（基准 ${(data.base_rate * 100).toFixed(1)}%，相对 ${Number(data.relative_edge) >= 0 ? '+' : ''}${(Number(data.relative_edge) * 100).toFixed(1)}pp）` : ''}${modelTop ? ` · 分位 Top ${modelTop}%` : ''}</p>
+        <p>${esc(quote.industry || '—')} · ${esc(data.profile?.label || '')}视角 · ${modelUsable ? `模型10日概率 ${modelP ? (modelP * 100).toFixed(1) + '%' : '—'}${data.base_rate ? `（基准 ${(data.base_rate * 100).toFixed(1)}%，相对 ${Number(data.relative_edge) >= 0 ? '+' : ''}${(Number(data.relative_edge) * 100).toFixed(1)}pp）` : ''}${modelTop ? ` · 分位 Top ${modelTop}%` : ''}` : `模型未通过门槛 · 规则分 ${fmtNum(score.rule_score, 1)} · 风险分 ${fmtNum(score.risk_score, 1)}`}</p>
       </div>
       <div class="detail-quote">
         <strong>${fmtNum(quote.price)}</strong>

@@ -186,16 +186,85 @@ def _metrics(y: np.ndarray, probabilities: np.ndarray, returns: np.ndarray) -> d
     }
 
 
+def _rank(values: np.ndarray) -> np.ndarray:
+    order = np.argsort(values, kind="mergesort")
+    sorted_values = values[order]
+    ranks = np.empty(len(values), dtype=float)
+    index = 0
+    while index < len(values):
+        end = index + 1
+        while end < len(values) and sorted_values[end] == sorted_values[index]:
+            end += 1
+        ranks[order[index:end]] = (index + 1 + end) / 2.0
+        index = end
+    return ranks
+
+
+def _daily_metrics(rows: list[dict], probabilities: np.ndarray, returns: np.ndarray) -> dict:
+    """Cross-sectional metrics.
+
+    Pooled AUC mixes market-wide up/down days with stock selection. A model can
+    have a pooled AUC below 0.5 while still ranking stocks slightly better than
+    random within each day, so we report both. Daily AUC/IC are the metrics that
+    matter for a cross-sectional picker; they are also noisier.
+    """
+    groups: dict[str, list[int]] = {}
+    for index, row in enumerate(rows):
+        groups.setdefault(row["date"], []).append(index)
+    daily_aucs: list[float] = []
+    ics: list[float] = []
+    for indices in groups.values():
+        if len(indices) < 8:
+            continue
+        idx = np.asarray(indices, dtype=int)
+        y_day = (returns[idx] > 0).astype(float)
+        p_day = probabilities[idx]
+        if 0 < y_day.sum() < len(y_day):
+            daily_aucs.append(_auc(y_day, p_day))
+        p_rank = _rank(p_day)
+        r_rank = _rank(returns[idx])
+        if p_rank.std() > 1e-12 and r_rank.std() > 1e-12:
+            ics.append(float(np.corrcoef(p_rank, r_rank)[0, 1]))
+    if not daily_aucs:
+        return {
+            "daily_auc": None,
+            "daily_auc_std": None,
+            "rank_ic": None,
+            "ic_std": None,
+            "ic_ir": None,
+            "ic_days": 0,
+            "ic_positive_ratio": None,
+        }
+    daily_auc = float(np.mean(daily_aucs))
+    ic_mean = float(np.mean(ics)) if ics else 0.0
+    ic_std = float(np.std(ics)) if ics else 0.0
+    return {
+        "daily_auc": round(daily_auc, 4),
+        "daily_auc_std": round(float(np.std(daily_aucs)), 4),
+        "rank_ic": round(ic_mean, 4),
+        "ic_std": round(ic_std, 4),
+        "ic_ir": round(ic_mean / ic_std, 3) if ic_std > 1e-9 else None,
+        "ic_days": len(ics),
+        "ic_positive_ratio": round(sum(1 for value in ics if value > 0) / len(ics), 3) if ics else None,
+    }
+
+
 def train_model(samples: list[dict], horizon: int = 1) -> dict:
     if len(samples) < 800:
         raise ValueError(f"not enough samples to train: {len(samples)}")
     dates = sorted({sample["date"] for sample in samples})
     if len(dates) < 60:
         raise ValueError("not enough distinct dates to train")
-    cutoff_index = max(40, int(len(dates) * 0.70))
-    cutoff = dates[min(cutoff_index, len(dates) - 1)]
-    train_rows = [sample for sample in samples if sample["date"] < cutoff]
-    validation_rows = [sample for sample in samples if sample["date"] >= cutoff]
+    split_index = max(40, int(len(dates) * 0.70))
+    split_index = min(split_index, len(dates) - 1)
+    # Purge one label horizon between train and validation. A sample at date t
+    # uses close[t+horizon]; without this gap the last training labels overlap
+    # the first validation features.
+    train_end_index = max(40, split_index - horizon)
+    cutoff = dates[train_end_index]
+    validation_start = dates[split_index]
+    train_rows = [sample for sample in samples if sample["date"] <= cutoff]
+    validation_rows = [sample for sample in samples if sample["date"] >= validation_start]
     if len(train_rows) < 500 or len(validation_rows) < 150:
         raise ValueError(
             f"time split too small: train={len(train_rows)} val={len(validation_rows)}"
@@ -222,7 +291,11 @@ def train_model(samples: list[dict], horizon: int = 1) -> dict:
         calibration = {"type": "platt", "a": a, "b": b}
     calibrated_val = _calibrate(val_probabilities, calibration)
     metrics = _metrics(y_val, calibrated_val, returns_val)
+    metrics.update(_daily_metrics(validation_rows, calibrated_val, returns_val))
     raw_metrics = _metrics(y_val, val_probabilities, returns_val)
+    raw_daily = _daily_metrics(validation_rows, val_probabilities, returns_val)
+    metrics["daily_auc_raw"] = raw_daily.get("daily_auc")
+    metrics["rank_ic_raw"] = raw_daily.get("rank_ic")
 
     # Refit on all available data after the holdout has done its job.
     x_all = np.asarray([sample["x"] for sample in samples], dtype=float)
@@ -242,10 +315,12 @@ def train_model(samples: list[dict], horizon: int = 1) -> dict:
         )
     importance.sort(key=lambda item: item["abs_weight"], reverse=True)
 
-    auc = raw_metrics["auc"]
-    if auc >= 0.56 and metrics["validation_samples"] >= 1500:
+    daily_auc = metrics.get("daily_auc") or 0.5
+    rank_ic = metrics.get("rank_ic") or 0.0
+    ic_days = int(metrics.get("ic_days") or 0)
+    if daily_auc >= 0.55 and rank_ic >= 0.03 and ic_days >= 40:
         confidence = "high"
-    elif auc >= 0.53:
+    elif daily_auc >= 0.52 and rank_ic >= 0.015:
         confidence = "medium"
     else:
         confidence = "low"
@@ -271,17 +346,17 @@ def train_model(samples: list[dict], horizon: int = 1) -> dict:
             "validation_from": validation_rows[0]["date"],
             "validation_to": validation_rows[-1]["date"],
             "cutoff": cutoff,
-            "usable": bool(auc >= 0.52),
+            "purge_days": int(horizon),
+            "usable": bool(daily_auc >= 0.52 and rank_ic >= 0.02),
             "horizon_days": int(horizon),
         },
         "feature_importance": importance[:6],
         "confidence": confidence,
         "trained_at": datetime.now(CN_TZ).isoformat(timespec="seconds"),
-        "method": f"L2 正则逻辑回归 + 时间切分验证 + 等频保序校准（{horizon}日）",
+        "method": f"L2 正则逻辑回归 + 净化时间切分 + 日度截面验证 + 保序校准（{horizon}日）",
         "limitations": (
-            "训练池来自当日流动性候选，存在选择/幸存者偏差；标签为未来收盘涨跌，"
-            "10日窗口彼此重叠，验证样本并非独立，AUC 可能偏乐观；"
-            "未覆盖盘中滑点、涨跌停无法成交与重大事件。"
+            "训练池来自当日流动性候选，存在选择/幸存者偏差；10日标签彼此重叠，"
+            "独立交易日远少于样本数；未覆盖盘中滑点、涨跌停无法成交与重大事件。"
         ),
     }
 

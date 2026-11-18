@@ -91,8 +91,8 @@ def rank_candidates(rows: list[dict], model_usable: bool) -> None:
     network completion order, so every tie is broken by code. Without that, the
     displayed percentile and the final order would change between refreshes.
 
-    When the model is not usable its percentile carries no information, so it is
-    held at a neutral 50 instead of letting tie order pick the winners.
+    When the model is not usable, the percentile is kept for diagnostics only;
+    final ranking uses rule quality + risk so a weak model cannot reorder names.
     """
     ordered = sorted(rows, key=lambda item: (item["probability"], item.get("code") or ""))
     count = max(1, len(ordered))
@@ -107,7 +107,9 @@ def rank_candidates(rows: list[dict], model_usable: bool) -> None:
                 + 0.15 * row["risk_score"]
             )
         else:
-            score = 0.15 * 50.0 + 0.68 * row["rule_score"] + 0.17 * row["risk_score"]
+            # Without a usable model, a 15% model weight is still noise. Keep
+            # the percentile for diagnostics, but rank on rule quality + risk.
+            score = 0.83 * row["rule_score"] + 0.17 * row["risk_score"]
         row["score"] = round(score, 1)
     rows.sort(key=lambda item: (-item["score"], item.get("code") or ""))
 
@@ -806,6 +808,7 @@ class MarketService:
                 raise RuntimeError("历史K线获取不足，无法建立模型")
             benchmark_bars = self._load_kline(BENCHMARK_SECID, 320)
             today = now_cn().strftime("%Y-%m-%d")
+            data_date = benchmark_bars[-1]["date"] if benchmark_bars else today
             phase = market_phase()
             try:
                 learning_summary = self.learning.refresh(
@@ -836,6 +839,7 @@ class MarketService:
             calibration_b = float(
                 (learning_summary.get("calibration") or {}).get("b") or 0.0
             )
+            model_usable = bool(model_artifact and model_artifact["metrics"].get("usable"))
             for code, bars in bars_map.items():
                 quote = quote_by_code.get(code)
                 if not quote:
@@ -854,9 +858,9 @@ class MarketService:
                     raw_probability
                 )
                 confidence = score["confidence"]
-                if model_artifact and model_artifact["confidence"] == "low":
+                if model_usable and model_artifact and model_artifact["confidence"] == "low":
                     confidence = "low" if confidence == "low" else "medium"
-                if model_artifact and probability - base_rate < 0.005:
+                if model_usable and model_artifact and probability - base_rate < 0.005:
                     confidence = "low"
                 spark = [round(bar["close"], 2) for bar in bars[-30:]]
                 rows.append(
@@ -881,8 +885,8 @@ class MarketService:
                         "probability_adjustment_pp": adjustment_pp,
                         "probability_pct": round(probability * 100, 1),
                         "base_rate": base_rate,
-                        "relative_edge": round(probability - base_rate, 4),
-                        "model_edge": model_prediction.get("edge_vs_base", 0.0),
+                        "relative_edge": round(probability - base_rate, 4) if model_usable else None,
+                        "model_edge": model_prediction.get("edge_vs_base", 0.0) if model_usable else None,
                         "model_percentile": 0.0,
                         "model_rank": 0,
                         "rule_score": score["rule_score"],
@@ -904,7 +908,6 @@ class MarketService:
                     }
                 )
 
-            model_usable = bool(model_artifact and model_artifact["metrics"].get("usable"))
             rank_candidates(rows, model_usable)
             self._analysis = {
                 "rows": rows,
@@ -916,6 +919,7 @@ class MarketService:
                 "snapshot_at": self._snapshot_at,
                 "built_at": time.time(),
                 "today": today,
+                "data_date": data_date,
                 "universe": len(snap),
                 "benchmark_bars": benchmark_bars,
                 "learning": learning_summary,
@@ -1014,12 +1018,13 @@ class MarketService:
 
         model = analysis["model"]
         metrics = model["metrics"] if model else None
-        learning_summary = analysis.get("learning") or self.learning.summary(analysis["today"])
+        signal_date = analysis.get("data_date") or analysis["today"]
+        learning_summary = analysis.get("learning") or self.learning.summary(signal_date)
         if picks:
-            self.learning.record_snapshot(analysis["today"], profile_key, picks)
+            self.learning.record_snapshot(signal_date, profile_key, picks)
             if profile_key == DEFAULT_PROFILE:
-                self.paper.record_day(analysis["today"], profile_key, picks)
-            learning_summary = self.learning.summary(analysis["today"])
+                self.paper.record_day(signal_date, profile_key, picks)
+            learning_summary = self.learning.summary(signal_date)
         now = now_cn()
         after_close = now.hour * 60 + now.minute >= 15 * 60 + 5
         if after_close:
@@ -1059,7 +1064,7 @@ class MarketService:
                 "trainedAt": model["trained_at"] if model else None,
             },
             "sampleCount": analysis["sample_count"],
-            "dataDate": analysis["today"],
+            "dataDate": signal_date,
             "nextRefreshSec": PICK_TTL,
             "disclaimer": DISCLAIMER,
         }

@@ -2,13 +2,14 @@
 
 Rules:
 - Every recorded candidate day allocates CNY 10,000 equally across the picks.
-- Entry is the next trading day's open; exit is that day's close.
+- A-share T+1: entry is the signal day's close; exit is the next trading day's
+  close. (Buying at next open and selling that same close would be illegal.)
 - Fractional shares are used so the research simulation does not get distorted
   by the 100-share lot size. Costs are approximated at 0.15% round trip.
 - A pending trade resolves after the next session has closed; same-day partial
   bars are never used as the final result.
-- Settlement only accepts the bar immediately after the signal day. When the
-  K-line window no longer reaches back to that day the trade is marked
+- Settlement only accepts the signal bar and the bar immediately after it. When
+  the K-line window no longer reaches back to the signal day the trade is marked
   ``unresolvable`` instead of being settled on a wrong, much later bar.
 """
 
@@ -152,7 +153,26 @@ class PaperStore:
                     except Exception:  # noqa: BLE001 - retry next refresh
                         missing = True
                         break
+                    entry_bar = next(
+                        (bar for bar in bars if bar.get("date") == signal_date),
+                        None,
+                    )
                     next_bar, reason = self._bar_after(bars, signal_date)
+                    if entry_bar is None:
+                        stale = (
+                            self._calendar_days(signal_date, today)
+                            > self.max_settle_lag_days
+                        )
+                        if stale and bars:
+                            expired = True
+                            expiry_reason = (
+                                "信号日已超出可回溯的日K窗口，无法确认信号日收盘价"
+                                if reason == "window"
+                                else "该标的日K长期未包含信号日"
+                            )
+                        else:
+                            missing = True
+                        break
                     if next_bar is None:
                         # Only real bars can prove the trade is past the window we can
                         # still reach. An empty response is a transient data problem,
@@ -178,20 +198,21 @@ class PaperStore:
                     if eval_date == today and not after_close:
                         missing = True
                         break
-                    open_price = float(next_bar.get("open") or 0)
+                    entry_close = float(entry_bar.get("close") or 0)
                     close_price = float(next_bar.get("close") or 0)
-                    if open_price <= 0 or close_price <= 0:
+                    if entry_close <= 0 or close_price <= 0:
                         missing = True
                         break
                     allocation = float(position.get("allocation") or 0)
-                    pnl = allocation * (close_price / open_price - 1.0) - allocation * self.cost_rate
+                    pnl = allocation * (close_price / entry_close - 1.0) - allocation * self.cost_rate
                     evaluated.append(
                         {
                             **position,
-                            "entryDate": eval_date,
-                            "entryOpen": round(open_price, 3),
+                            "entryDate": signal_date,
+                            "entryClose": round(entry_close, 3),
+                            "exitDate": eval_date,
                             "exitClose": round(close_price, 3),
-                            "shares": round(allocation / open_price, 4),
+                            "shares": round(allocation / entry_close, 4),
                             "returnPct": round(pnl / allocation * 100, 3) if allocation else 0.0,
                             "pnl": round(pnl, 2),
                         }
@@ -208,7 +229,7 @@ class PaperStore:
                 trade["positions"] = evaluated
                 trade["status"] = "resolved"
                 trade["entryDate"] = min(item["entryDate"] for item in evaluated)
-                trade["exitDate"] = max(item["entryDate"] for item in evaluated)
+                trade["exitDate"] = max(item["exitDate"] for item in evaluated)
                 trade["totalPnl"] = round(total_pnl, 2)
                 trade["totalReturnPct"] = round(total_pnl / self.initial_capital * 100, 3)
                 changed = True
@@ -275,8 +296,9 @@ class PaperStore:
             "latestPending": pending[-1] if pending else None,
             "recentTrades": resolved[-8:][::-1],
             "note": (
-                "每日固定 10,000 元等权模拟；次日开盘买入、次日收盘计值，含 0.15% 估算成本；"
-                "不复利，忽略 100 股整数限制；超出日K窗口仍无法确认次日 bar 的旧记录标记为失效，不参与统计。"
+                "每日固定 10,000 元等权模拟；信号日收盘买入、下一交易日收盘计值（T+1），"
+                "含 0.15% 估算成本；不复利，忽略 100 股整数限制；"
+                "超出日K窗口仍无法确认次日 bar 的旧记录标记为失效，不参与统计。"
             ),
         }
 

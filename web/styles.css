@@ -1166,6 +1166,8 @@ a:hover { text-decoration: underline; }
 .metric b { display: block; margin-top: 2px; font-family: var(--mono); font-size: 17px; font-weight: 600; letter-spacing: -0.03em; }
 .metric small { color: var(--muted); font-size: 8.5px; }
 .model-detail { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 22px; padding: 14px 18px 18px; }
+.model-alert { display: flex; align-items: flex-start; gap: 7px; margin: 1px 18px 0; padding: 8px 10px; border: 1px solid rgba(244, 201, 93, 0.16); border-radius: 7px; background: rgba(244, 201, 93, 0.04); color: var(--muted); font-size: 9px; line-height: 1.55; }
+.model-alert .icon { width: 13px; height: 13px; flex: 0 0 auto; color: var(--accent); margin-top: 1px; }
 .feature-bars { display: flex; flex-direction: column; gap: 8px; }
 .feature-row { display: grid; grid-template-columns: 74px minmax(0, 1fr) 40px; align-items: center; gap: 8px; }
 .feature-row span { color: var(--muted); font-size: 10px; }

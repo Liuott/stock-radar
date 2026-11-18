@@ -44,17 +44,18 @@ class PaperStoreTests(unittest.TestCase):
         self.assertEqual(len(summary["latestPending"]["positions"]), 2)
         self.assertEqual(summary["latestPending"]["positions"][0]["allocation"], 5000)
 
-    def test_resolves_next_open_to_next_close(self) -> None:
+    def test_resolves_signal_close_to_next_close(self) -> None:
         self.store.record_day("2026-11-18", "balanced", picks())
         bars = [
-            {"date": "2026-11-18", "open": 9.0, "close": 9.0},
-            {"date": "2026-11-19", "open": 10.0, "close": 11.0},
+            {"date": "2026-11-18", "open": 9.0, "close": 10.0},
+            {"date": "2026-11-19", "open": 10.5, "close": 11.0},
         ]
         summary = self.store.refresh(lambda secid: bars, "2026-11-19", True)
         self.assertEqual(summary["resolvedTrades"], 1)
         self.assertAlmostEqual(summary["totalPnl"], 985.0)
         self.assertAlmostEqual(summary["equity"], 10985.0)
-        self.assertEqual(summary["latest"]["positions"][0]["entryOpen"], 10.0)
+        self.assertEqual(summary["latest"]["entryDate"], "2026-11-18")
+        self.assertEqual(summary["latest"]["positions"][0]["entryClose"], 10.0)
 
     def test_does_not_resolve_before_close(self) -> None:
         self.store.record_day("2026-11-18", "balanced", picks())
@@ -82,8 +83,8 @@ class PaperStoreTests(unittest.TestCase):
         ]
         summary = self.store.refresh(lambda secid: bars, "2026-11-20", True)
         self.assertEqual(summary["resolvedTrades"], 1)
-        self.assertEqual(summary["latest"]["entryDate"], "2026-11-19")
-        self.assertEqual(summary["latest"]["positions"][0]["entryOpen"], 10.0)
+        self.assertEqual(summary["latest"]["entryDate"], "2026-11-18")
+        self.assertEqual(summary["latest"]["positions"][0]["entryClose"], 9.0)
 
     def test_does_not_guess_when_window_lost_the_signal_day(self) -> None:
         # The K-line window starts after the signal day: the true next bar is

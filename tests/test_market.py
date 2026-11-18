@@ -49,14 +49,14 @@ class RankCandidatesTests(unittest.TestCase):
         rank_candidates(rows, False)
         for row in rows:
             expected = round(
-                0.15 * 50.0 + 0.68 * row["rule_score"] + 0.17 * row["risk_score"], 1
+                0.83 * row["rule_score"] + 0.17 * row["risk_score"], 1
             )
             self.assertEqual(row["score"], expected)
 
     def test_usable_model_percentile_does_steer_the_score(self) -> None:
         rows = _rows(["601717", "000543", "002223", "301606"])
         rank_candidates(rows, True)
-        neutral = round(0.15 * 50.0 + 0.68 * 81.4 + 0.17 * 74.3, 1)
+        neutral = round(0.83 * 81.4 + 0.17 * 74.3, 1)
         top = next(row for row in rows if row["code"] == "601717")
         self.assertAlmostEqual(top["model_percentile"], 1.0)
         self.assertNotEqual(top["score"], neutral)
