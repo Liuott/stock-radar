@@ -9,6 +9,7 @@ const PAGE_META = {
   leaders: { eyebrow: 'LEADER RADAR', title: '龙头雷达' },
   picks: { eyebrow: 'DAILY WATCHLIST', title: '今日候选' },
   watch: { eyebrow: 'LIVE MONITOR', title: '自选监控' },
+  learning: { eyebrow: 'MODEL LEARNING', title: '学习复盘' },
   method: { eyebrow: 'MODEL CARD', title: '方法与风险' },
 };
 
@@ -22,8 +23,9 @@ const state = {
   leaders: null,
   picks: null,
   watch: null,
+  learning: null,
   method: null,
-  loading: { overview: false, leaders: false, picks: false, watch: false, method: false },
+  loading: { overview: false, leaders: false, picks: false, watch: false, learning: false, method: false },
   errors: {},
   chart: null,
   searchTimer: null,
@@ -325,6 +327,15 @@ function renderRoute() {
     }
     return;
   }
+  if (state.route === 'learning') {
+    if (!state.learning) {
+      root.innerHTML = skeletonLearning();
+      loadLearning();
+    } else {
+      renderLearning();
+    }
+    return;
+  }
   if (state.route === 'method') {
     if (!state.method) {
       root.innerHTML = skeletonMethod();
@@ -426,6 +437,26 @@ async function loadWatch(silent = false) {
     }
   } finally {
     setLoading('watch', false);
+  }
+}
+
+async function loadLearning(force = false) {
+  if (state.loading.learning) return;
+  setLoading('learning', true);
+  if (!state.learning && state.route === 'learning') $('#viewRoot').innerHTML = skeletonLearning();
+  try {
+    const data = await api(`/api/learning${force ? '?refresh=1' : ''}`);
+    state.learning = data;
+    state.errors.learning = null;
+    if (state.route === 'learning') renderLearning();
+  } catch (error) {
+    state.errors.learning = error.message;
+    if (state.route === 'learning') {
+      if (state.learning) showNotice(`学习数据刷新失败，展示缓存：${error.message}`, 'danger');
+      else $('#viewRoot').innerHTML = errorState('学习复盘加载失败', error.message, 'learning');
+    }
+  } finally {
+    setLoading('learning', false);
   }
 }
 
@@ -796,6 +827,25 @@ function renderPicks() {
         ? `<div class="notice">${icon('alert')}<div>模型处于弱信号区（验证 AUC ${metrics.auc ?? '—'}），候选概率接近历史基准 ${(baseRate * 100).toFixed(1)}%。请把候选当作观察名单，而不是买入信号。</div></div>`
         : '';
   const modelConfidence = CONFIDENCE_LABELS[model.confidence] || '—';
+  const learning = data.learning || {};
+  const learningSamples = Number(learning.samples || 0);
+  const learningAdjustment = Number((learning.calibration || {}).adjustmentPpAt50 || 0);
+  const learningStrip = `
+    <div class="learning-strip">
+      <div class="learning-strip-icon">${icon('loop')}</div>
+      <div><strong>${learningSamples ? `已复盘 ${learningSamples} 个候选样本` : '学习复盘等待样本'}</strong><span>${learningSamples ? `实际命中率 ${learning.hitRate !== null && learning.hitRate !== undefined ? (Number(learning.hitRate) * 100).toFixed(1) + '%' : '—'}，概率校准 ${learningAdjustment >= 0 ? '+' : ''}${learningAdjustment.toFixed(1)}pp` : '先记录候选，下一交易日收盘后自动复盘并校准概率。'}</span></div>
+      <button class="text-btn" data-route="learning">查看学习复盘 ${icon('arrow')}</button>
+    </div>`;
+  const paper = data.paper || {};
+  const paperPnl = Number(paper.totalPnl || 0);
+  const paperLatest = paper.latest;
+  const paperPending = paper.latestPending;
+  const paperStrip = `
+    <div class="paper-strip">
+      <div class="paper-strip-main"><span>1 万元模拟盘</span><strong class="${paperPnl >= 0 ? 'up' : 'down'}">${paperPnl >= 0 ? '+' : ''}${fmtNum(paperPnl, 2)}</strong><small>累计 · 权益 ${fmtNum(paper.equity || 10000, 2)}</small></div>
+      <div class="paper-strip-note">${paperLatest ? `最近结算 ${esc(paperLatest.signalDate)}：${paperLatest.totalReturnPct >= 0 ? '+' : ''}${fmtNum(paperLatest.totalReturnPct, 2)}%` : paperPending ? `已记录 ${esc(paperPending.signalDate)} 的候选，等次日开盘/收盘结算` : '生成候选后自动记录模拟交易'}</div>
+      <button class="text-btn" data-route="learning">查看模拟记录 ${icon('arrow')}</button>
+    </div>`;
   const usageGuide = `
     <div class="usage-guide ${state.guides.picksGuide ? 'collapsed' : ''}" id="picksGuide">
       <div class="usage-guide-head">
@@ -837,6 +887,8 @@ function renderPicks() {
     const flags = (pick.flags || []).map((flag) => `<span class="chip bad">${esc(flag)}</span>`).join('');
     const weakEdge = Number(pick.relative_edge || 0) < 0.005;
     const edgeChip = weakEdge ? '<span class="chip warn">模型优势微弱</span>' : '';
+    const learnAdjust = Number(pick.probability_adjustment_pp || 0);
+    const learnChip = Math.abs(learnAdjust) >= 0.1 ? `<span class="chip">学习校准 ${learnAdjust >= 0 ? '+' : ''}${learnAdjust.toFixed(1)}pp</span>` : '';
     const edgeText = Number.isFinite(Number(pick.relative_edge)) ? `${Number(pick.relative_edge) >= 0 ? '+' : ''}${(Number(pick.relative_edge) * 100).toFixed(1)}pp` : '—';
     const execSteps = (execution.steps || []).map((step) => `<li>${esc(step)}</li>`).join('');
     return `
@@ -873,7 +925,7 @@ function renderPicks() {
           <div class="plan-cell"><span>建议仓位</span><b>≤${fmtNum(plan.suggested_weight_pct, 1)}%</b></div>
         </div>
         <div class="plan-caption">价格进入区间才执行；区间是计划，不是预测。</div>
-        <div class="chips">${reasons}${risks}${flags}${edgeChip}</div>
+        <div class="chips">${reasons}${risks}${flags}${edgeChip}${learnChip}</div>
         <div class="pick-foot">
           <span class="confidence ${esc(conf)}">${esc(CONFIDENCE_LABELS[conf] || '')} · ${esc(plan.action || '')}</span>
           <button class="ghost-btn" data-action="detail" data-code="${esc(pick.code)}">${icon('chart')} 详情</button>
@@ -901,6 +953,8 @@ function renderPicks() {
         <div class="model-health"><span class="health-dot"></span>验证 AUC <b>${metrics.auc ?? '—'}</b> · 样本 <b>${fmtCompact(metrics.validation_samples || data.sampleCount)}</b> · ${esc(modelConfidence)}</div>
       </div>
       ${usageGuide}
+      ${learningStrip}
+      ${paperStrip}
       ${notice}
       <div class="picks-grid ${picks.length === 1 ? 'single' : ''}">
         ${picks.length ? `${cards}${funnelCard}` : `
@@ -1118,6 +1172,160 @@ function renderWatch() {
         </aside>
       </div>
     </section>`;
+}
+
+/* ------------------------------------------------------------------ learning */
+function renderLearning() {
+  const data = state.learning;
+  if (!data) return;
+  const stats = data.calibration || {};
+  const previous = data.previous || [];
+  const recent = data.recentDays || [];
+  const factors = data.factors || [];
+  const paper = data.paper || {};
+  const paperLatest = paper.latest || null;
+  const paperPending = paper.latestPending || null;
+  const paperPositions = (paperLatest?.positions || paperPending?.positions || []);
+  const paperRows = paperPositions.map((position) => `
+    <tr>
+      <td><div class="watch-name"><strong>${esc(position.name)}</strong><small>${esc(position.code)} · ${fmtNum(position.weightPct, 1)}%</small></div></td>
+      <td><span class="learning-predicted">${fmtNum(position.allocation, 0)}</span></td>
+      <td>${paperLatest ? `<span class="learning-date">${fmtNum(position.entryOpen)} → ${fmtNum(position.exitClose)}</span>` : '<span class="micro">次日开盘</span>'}</td>
+      <td>${paperLatest ? `<span class="${pctClass(position.returnPct)}">${fmtPct(position.returnPct)}</span>` : '<span class="result-pill muted">待结算</span>'}</td>
+      <td>${paperLatest ? `<span class="${Number(position.pnl) >= 0 ? 'up' : 'down'}">${fmtSigned(position.pnl)}</span>` : '—'}</td>
+    </tr>`).join('');
+  const paperCard = `
+    <article class="card paper-card">
+      <div class="card-head">
+        <div><div class="eyebrow">PAPER PORTFOLIO · CNY 10,000</div><h2>1 万元模拟盘</h2></div>
+        <span class="badge ${paperLatest ? 'gold' : ''}">${paperLatest ? '已结算' : paperPending ? '待次日结算' : '等待候选'}</span>
+      </div>
+      <div class="paper-stats">
+        <div><span>模拟权益</span><b>${fmtNum(paper.equity || 10000, 2)}</b><small>初始 10,000</small></div>
+        <div><span>累计盈亏</span><b class="${Number(paper.totalPnl || 0) >= 0 ? 'up' : 'down'}">${fmtSigned(paper.totalPnl || 0)}</b><small>${fmtPct(paper.totalReturnPct || 0)}</small></div>
+        <div><span>已结算天数</span><b>${paper.resolvedTrades || 0}</b><small>每日固定 1 万</small></div>
+        <div><span>模拟胜率</span><b>${paper.winRate !== null && paper.winRate !== undefined ? fmtNum(Number(paper.winRate) * 100, 1) + '%' : '—'}</b><small>按日盈亏</small></div>
+      </div>
+      ${paperPositions.length ? `
+        <div class="paper-table-wrap">
+          <div class="mini-title"><span class="dot"></span>${paperLatest ? `最近结算 ${esc(paperLatest.signalDate)} → ${esc(paperLatest.exitDate)}` : `已记录 ${esc(paperPending.signalDate)}，计划次日开盘买入、收盘结算`}</div>
+          <table class="learning-table">
+            <thead><tr><th>标的</th><th>分配金额</th><th>买入 → 卖出</th><th>收益</th><th>盈亏</th></tr></thead>
+            <tbody>${paperRows}</tbody>
+          </table>
+        </div>` : `<div class="learning-empty">${icon('chart')}<h3>还没有模拟交易</h3><p>在“今日候选”生成候选后，系统会自动用 1 万元等权记录；次日开盘买入、收盘结算。</p><button class="ghost-btn" data-route="picks">去生成候选</button></div>`}
+      ${paperPending && paperLatest ? `<p class="micro" style="padding:0 18px 4px">另有 ${esc(paperPending.signalDate)} 的候选已记录，等待次日开盘/收盘结算。</p>` : ''}
+      <p class="micro" style="padding:0 18px 4px"><b style="color:var(--text-2);font-weight:500">系统决策：</b>均衡档候选，等权分配，最多 5 只；次日开盘买入，次日收盘计值。</p>
+      <p class="micro" style="padding:0 18px 15px">${esc(paper.note || '每日固定 10,000 元等权模拟；次日开盘买入、次日收盘计值；含 0.15% 估算成本。')}</p>
+    </article>`;
+  const hasSamples = Boolean(data.available && data.samples);
+  const hitRate = data.hitRate !== null && data.hitRate !== undefined ? Number(data.hitRate) : null;
+  const avgReturn = data.avgReturn !== null && data.avgReturn !== undefined ? Number(data.avgReturn) : null;
+  const bias = Number(stats.b || 0);
+  const adjustment = stats.adjustmentPpAt50 !== undefined ? Number(stats.adjustmentPpAt50) : 0;
+
+  const previousRows = previous.map((item) => `
+    <tr data-action="detail" data-code="${esc(item.code)}">
+      <td><div class="watch-name"><strong>${esc(item.name)}</strong><small>${esc(item.code)} · ${esc(item.profile || '')}</small></div></td>
+      <td><span class="learning-predicted">${fmtNum(item.predictedPct, 1)}%</span></td>
+      <td><span class="${pctClass(item.actualPct)}">${fmtPct(item.actualPct)}</span></td>
+      <td><span class="result-pill ${item.actualUp ? 'success' : 'danger'}">${item.actualUp ? '上涨' : '下跌'}</span></td>
+      <td><span class="learning-date">${esc(item.snapshotDate)} → ${esc(item.evalDate)}</span></td>
+    </tr>`).join('');
+
+  const recentRows = recent.map((day) => {
+    const rate = Number(day.hitRate || 0) * 100;
+    return `
+      <div class="learning-day">
+        <div class="learning-day-head"><span>${esc(day.date)}</span><b class="${rate >= 50 ? 'up' : 'down'}">${fmtNum(rate, 0)}%</b><small>${day.count} 只</small></div>
+        <div class="learning-bar"><i style="width:${clamp(rate, 2, 100)}%"></i></div>
+        <div class="learning-day-foot"><span>次日均收益 ${fmtPct(Number(day.avgReturn || 0) * 100)}</span><span>${esc(day.evalDate || '')}</span></div>
+      </div>`;
+  }).join('');
+
+  const factorRows = factors.map((factor) => `
+    <div class="learning-factor">
+      <span>${esc(factor.label)}</span>
+      <div><b class="up">${fmtNum(factor.winAvg, 0)}</b><small>上涨组</small></div>
+      <div><b class="down">${fmtNum(factor.lossAvg, 0)}</b><small>下跌组</small></div>
+      <strong class="${Number(factor.diff) >= 0 ? 'up' : 'down'}">${Number(factor.diff) >= 0 ? '+' : ''}${fmtNum(factor.diff, 1)}</strong>
+      <em>${factor.samples} 样本</em>
+    </div>`).join('');
+
+  $('#viewRoot').innerHTML = `
+    <section class="view learning-view">
+      <div class="learning-hero">
+        <div>
+          <div class="eyebrow">LEARNING LOOP · WALK FORWARD</div>
+          <h2>用 <em>n-2 的候选</em>，看 <em>n-1 的结果</em>，校准 <em>n 的概率</em>。</h2>
+          <p>每次生成候选后自动存档；下一交易日收盘后，用真实次日涨跌复盘，并把偏差温和地校准到新概率。不是用未来数据“假装预测”，而是让模型为自己的历史判断负责。</p>
+          <div class="learning-flow">
+            <span>n-2 候选</span><b>→</b><span>n-1 收盘结果</span><b>→</b><span>n 概率校准</span>
+          </div>
+        </div>
+        <div class="learning-calibration">
+          <span>概率校准</span>
+          <strong>${bias >= 0 ? '+' : ''}${fmtNum(adjustment, 1)}<small>pp @50%</small></strong>
+          <p>样本 ${data.samples || 0} · 收缩系数 ${fmtNum(data.samples ? data.samples / (data.samples + 30) : 0, 2)}</p>
+          <p class="micro">${esc(data.method || '')}</p>
+        </div>
+      </div>
+
+      <div class="learning-stats">
+        <div><span>已复盘样本</span><b>${data.samples || 0}</b><small>候选 × 交易日</small></div>
+        <div><span>实际命中率</span><b class="${hitRate !== null && hitRate >= 0.5 ? 'up' : 'down'}">${hitRate !== null ? fmtNum(hitRate * 100, 1) + '%' : '—'}</b><small>次日收盘上涨比例</small></div>
+        <div><span>平均预测概率</span><b>${data.avgPredicted !== null && data.avgPredicted !== undefined ? fmtNum(Number(data.avgPredicted) * 100, 1) + '%' : '—'}</b><small>与命中率比较</small></div>
+        <div><span>次日平均收益</span><b class="${avgReturn !== null && avgReturn >= 0 ? 'up' : 'down'}">${avgReturn !== null ? fmtPct(avgReturn * 100) : '—'}</b><small>未扣交易成本</small></div>
+      </div>
+
+      ${existsNotice(data)}
+      ${paperCard}
+
+      <div class="learning-grid">
+        <article class="card">
+          <div class="card-head">
+            <div><div class="eyebrow">LAST REVIEW · ${esc(data.previousEvalDate || '—')}</div><h2>上一批候选，后来怎样了</h2></div>
+            <span class="badge">${esc(data.previousDate || '—')} 记录</span>
+          </div>
+          ${previous.length ? `
+            <table class="learning-table">
+              <thead><tr><th>标的</th><th>预测</th><th>次日实际</th><th>结果</th><th>日期</th></tr></thead>
+              <tbody>${previousRows}</tbody>
+            </table>` : `<div class="learning-empty">${icon('loop')}<h3>还没有可复盘的候选</h3><p>先让工具在交易日记录一次候选；下一交易日收盘后会自动出现复盘结果。</p><button class="ghost-btn" data-route="picks">去生成今日候选</button></div>`}
+        </article>
+        <article class="card">
+          <div class="card-head"><div><div class="eyebrow">RECENT HIT RATE</div><h2>最近学习曲线</h2></div><span class="badge">按候选日</span></div>
+          <div class="learning-days">${recentRows || '<p class="micro" style="padding:16px">还没有足够样本。</p>'}</div>
+        </article>
+      </div>
+
+      <div class="learning-grid">
+        <article class="card">
+          <div class="card-head"><div><div class="eyebrow">FACTOR EFFICACY</div><h2>近期因子表现</h2></div><span class="badge">描述性</span></div>
+          <div class="learning-factors">
+            ${factorRows || '<p class="micro" style="padding:16px">样本不足，暂不展示因子差异。</p>'}
+          </div>
+          <p class="micro" style="padding:0 18px 16px">上涨组与下跌组的平均因子分差异，只用于观察，不自动修改因子权重。</p>
+        </article>
+        <article class="card learning-note">
+          <div class="card-head"><div><div class="eyebrow">HOW IT LEARNS</div><h2>它到底学到了什么</h2></div></div>
+          <div class="learning-note-body">
+            <div><b>01 只校准概率</b><p>用实际命中率与平均预测概率的偏差，做截距校准；不改写趋势、量能、MACD 等因子权重。</p></div>
+            <div><b>02 强收缩</b><p>每天只有几只候选，样本很少。校准系数会被强烈拉回 0，避免一两笔盈利就把概率吹高。</p></div>
+            <div><b>03 不碰未来</b><p>只有下一交易日已收盘的结果才进入复盘；盘中不完整数据不会用于校准。</p></div>
+            <div><b>04 允许没学到</b><p>没有样本或结果不足时，校准保持 0，页面明确显示“还没有可复盘样本”。</p></div>
+          </div>
+          <div class="leader-risk" style="margin-top:0">${icon('alert')}<span>${esc(data.note || '')}</span></div>
+        </article>
+      </div>
+    </section>`;
+}
+
+function existsNotice(data) {
+  if (!data.available) {
+    return `<div class="notice">${icon('loop')}<div>学习复盘需要至少一次“候选记录 + 下一交易日收盘”。当前还没有完整样本，校准暂不生效。</div></div>`;
+  }
+  return '';
 }
 
 /* ------------------------------------------------------------------ method */
@@ -1524,6 +1732,11 @@ function skeletonWatch() {
   return `<div class="watch-layout"><div class="skeleton-card" style="height:360px"><div class="skeleton sk-line w40"></div><div class="skeleton sk-line w80" style="margin-top:20px"></div><div class="skeleton sk-line w60"></div><div class="skeleton sk-line w80"></div><div class="skeleton sk-line w60"></div></div><div class="skeleton-card" style="height:260px"></div></div>`;
 }
 
+function skeletonLearning() {
+  return `<div class="skeleton-card" style="height:220px;margin-bottom:12px"><div class="skeleton sk-line w40"></div><div class="skeleton sk-big" style="width:55%"></div><div class="skeleton sk-line w80"></div><div class="skeleton sk-line w60"></div></div>
+  <div class="skeleton-card" style="height:300px"><div class="skeleton sk-line w40"></div><div class="skeleton sk-line w80" style="margin-top:20px"></div><div class="skeleton sk-line w60"></div><div class="skeleton sk-line w80"></div></div>`;
+}
+
 function skeletonMethod() {
   return `<div class="skeleton-card" style="height:200px;margin-bottom:12px"><div class="skeleton sk-line w40"></div><div class="skeleton sk-big" style="width:70%"></div><div class="skeleton sk-line w80"></div><div class="skeleton sk-line w60"></div></div><div class="skeleton-card" style="height:280px"><div class="skeleton sk-line w40"></div><div class="skeleton sk-line" style="margin-top:18px"></div><div class="skeleton sk-line w80"></div><div class="skeleton sk-line w60"></div></div>`;
 }
@@ -1557,6 +1770,7 @@ function handleAction(element) {
     if (scope === 'overview') loadOverview(true);
     if (scope === 'leaders') loadLeaders(true);
     if (scope === 'picks') loadPicks(true);
+    if (scope === 'learning') loadLearning(true);
     if (scope === 'watch') loadWatch();
     if (scope === 'method') loadMethod();
     if (scope === 'detail' && state.lastDetailCode) openDetail(state.lastDetailCode);
@@ -1566,6 +1780,7 @@ function handleAction(element) {
     if (state.route === 'leaders') loadLeaders(true);
     else if (state.route === 'picks') loadPicks(true);
     else if (state.route === 'watch') loadWatch();
+    else if (state.route === 'learning') loadLearning(true);
     else if (state.route === 'method') loadMethod();
     else loadOverview(true);
     return;
@@ -1610,6 +1825,7 @@ function bindEvents() {
     if (state.route === 'leaders') loadLeaders(true);
     else if (state.route === 'picks') loadPicks(true);
     else if (state.route === 'watch') loadWatch();
+    else if (state.route === 'learning') loadLearning(true);
     else if (state.route === 'method') loadMethod();
     else loadOverview(true);
   });
@@ -1681,6 +1897,7 @@ function startPolling() {
     if (state.route === 'overview' && state.pollTick % 12 === 0) loadPicks(false, true);
     if (state.route === 'watch' && (!state.liveMode || state.liveError) && !state.watchEditing && (state.watch?.items?.length || 0) > 0) loadWatch(true);
     if (state.route === 'picks' && state.pollTick % 18 === 0) loadPicks(false, true);
+    if (state.route === 'learning' && state.pollTick % 12 === 0) loadLearning(true);
   }, 5000);
   setInterval(loadLive, 1000);
 }
@@ -1713,6 +1930,7 @@ async function init() {
   await Promise.allSettled([loadOverview(), loadPicks(), loadWatch()]);
   if (state.liveMode) loadLive(true);
   if (state.route === 'leaders') loadLeaders();
+  if (state.route === 'learning') loadLearning();
   if (state.route === 'method') loadMethod();
   if (!state.overview && !state.errors.overview) renderRoute();
 }

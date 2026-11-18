@@ -16,6 +16,8 @@ from app.config import (
     DISCLAIMER,
     INDEXES,
     KLINE_CACHE_DIR,
+    LEARNING_FILE,
+    PAPER_FILE,
     PROFILES,
     WATCHLIST_FILE,
     market_phase,
@@ -28,7 +30,9 @@ from app.services.indicators import (
     current_features,
     market_map,
 )
+from app.services.learning import LearningStore
 from app.services.model import predict, train_model
+from app.services.paper import PaperStore
 from app.services.scoring import (
     build_execution_guide,
     build_plan,
@@ -84,6 +88,8 @@ class MarketService:
         self.provider = provider or EastmoneyProvider()
         self.cache = DiskJsonCache(KLINE_CACHE_DIR)
         self.watchlist = WatchlistStore(WATCHLIST_FILE)
+        self.learning = LearningStore(LEARNING_FILE)
+        self.paper = PaperStore(PAPER_FILE)
         self._snapshot: list[dict] | None = None
         self._snapshot_at = 0.0
         self._snapshot_stale = False
@@ -771,6 +777,13 @@ class MarketService:
                 raise RuntimeError("历史K线获取不足，无法建立模型")
             benchmark_bars = self._load_kline(BENCHMARK_SECID, 320)
             today = now_cn().strftime("%Y-%m-%d")
+            phase = market_phase()
+            try:
+                learning_summary = self.learning.refresh(
+                    self._load_kline, today, phase["is_open"]
+                )
+            except Exception:  # noqa: BLE001 - learning must not break picks
+                learning_summary = self.learning.summary(today)
             completed = {
                 code: [bar for bar in bars if bar["date"] != today]
                 for code, bars in bars_map.items()
@@ -791,6 +804,9 @@ class MarketService:
                 if model_artifact
                 else 0.5
             )
+            calibration_b = float(
+                (learning_summary.get("calibration") or {}).get("b") or 0.0
+            )
             for code, bars in bars_map.items():
                 quote = quote_by_code.get(code)
                 if not quote:
@@ -804,7 +820,10 @@ class MarketService:
                     if model_artifact
                     else {"probability": 0.5, "raw_probability": 0.5, "edge_vs_base": 0.0, "logit": 0.0}
                 )
-                probability = model_prediction["probability"]
+                raw_probability = model_prediction["probability"]
+                probability, adjustment_pp, calibration_b = self.learning.calibrate(
+                    raw_probability
+                )
                 confidence = score["confidence"]
                 if model_artifact and model_artifact["confidence"] == "low":
                     confidence = "low" if confidence == "low" else "medium"
@@ -829,6 +848,8 @@ class MarketService:
                         "change60": quote.get("change60"),
                         "score": 0.0,
                         "probability": probability,
+                        "probability_raw": raw_probability,
+                        "probability_adjustment_pp": adjustment_pp,
                         "probability_pct": round(probability * 100, 1),
                         "base_rate": base_rate,
                         "relative_edge": round(probability - base_rate, 4),
@@ -891,6 +912,8 @@ class MarketService:
                 "today": today,
                 "universe": len(snap),
                 "benchmark_bars": benchmark_bars,
+                "learning": learning_summary,
+                "calibration_b": calibration_b,
             }
             self._analysis_at = time.time()
             self._pick_cache.clear()
@@ -985,6 +1008,22 @@ class MarketService:
 
         model = analysis["model"]
         metrics = model["metrics"] if model else None
+        learning_summary = analysis.get("learning") or self.learning.summary(analysis["today"])
+        if picks:
+            self.learning.record_snapshot(analysis["today"], profile_key, picks)
+            if profile_key == DEFAULT_PROFILE:
+                self.paper.record_day(analysis["today"], profile_key, picks)
+            learning_summary = self.learning.summary(analysis["today"])
+        now = now_cn()
+        after_close = now.hour * 60 + now.minute >= 15 * 60 + 5
+        if after_close:
+            paper_summary = self.paper.refresh(
+                lambda secid: self.provider.fetch_kline(secid, 20),
+                analysis["today"],
+                True,
+            )
+        else:
+            paper_summary = self.paper.summary()
         response = {
             "asOf": datetime.now(CN_TZ).isoformat(timespec="seconds"),
             "profile": profile,
@@ -997,6 +1036,8 @@ class MarketService:
             "excludedCount": excluded,
             "noPickReason": no_pick_reason,
             "baseRate": round(base_rate, 4),
+            "learning": learning_summary,
+            "paper": paper_summary,
             "model": {
                 "available": model is not None,
                 "error": analysis["model_error"],
@@ -1016,6 +1057,31 @@ class MarketService:
         }
         self._pick_cache[profile_key] = (time.time(), response)
         return response
+
+    # --------------------------------------------------------------- learning
+    def get_learning(self) -> dict:
+        today = now_cn().strftime("%Y-%m-%d")
+        phase = market_phase()
+        try:
+            summary = self.learning.refresh(self._load_kline, today, phase["is_open"])
+        except Exception:  # noqa: BLE001 - still return what has been resolved
+            summary = self.learning.summary(today)
+        summary["generatedAt"] = datetime.now(CN_TZ).isoformat(timespec="seconds")
+        summary["market"] = phase
+        now = now_cn()
+        after_close = now.hour * 60 + now.minute >= 15 * 60 + 5
+        if after_close:
+            try:
+                summary["paper"] = self.paper.refresh(
+                    lambda secid: self.provider.fetch_kline(secid, 20),
+                    today,
+                    True,
+                )
+            except Exception:  # noqa: BLE001 - paper tracking must not break learning
+                summary["paper"] = self.paper.summary()
+        else:
+            summary["paper"] = self.paper.summary()
+        return summary
 
     # --------------------------------------------------------------- detail
     def get_stock(self, code: str, profile_key: str = DEFAULT_PROFILE) -> dict:

@@ -7,7 +7,7 @@ from pathlib import Path
 
 APP_NAME = "A股雷达"
 APP_NAME_EN = "StockLens"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.6.0"
 APP_TAGLINE = "用公开数据做可解释的观察，不预测确定的未来"
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -16,6 +16,8 @@ CACHE_DIR = DATA_DIR / "cache"
 KLINE_CACHE_DIR = CACHE_DIR / "klines"
 WEB_DIR = ROOT_DIR / "web"
 WATCHLIST_FILE = DATA_DIR / "watchlist.json"
+LEARNING_FILE = DATA_DIR / "learning.json"
+PAPER_FILE = DATA_DIR / "paper.json"
 
 CN_TZ = timezone(timedelta(hours=8))
 

@@ -12,7 +12,7 @@
   <title>A股雷达 · StockLens</title>
   <meta name="description" content="A股实时行情、板块温度、可解释因子评分与每日观察名单。仅用于个人研究，不构成投资建议。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b111b'/%3E%3Ccircle cx='32' cy='32' r='17' fill='none' stroke='%23f4c95d' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='8' fill='none' stroke='%235cc8ff' stroke-width='3'/%3E%3Cpath d='M32 32 L50 18' stroke='%23ff5c6c' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="styles.css?v=0.4.1">
+  <link rel="stylesheet" href="styles.css?v=0.6.0">
 </head>
 <body>
   <svg class="svg-sprite" aria-hidden="true">
@@ -21,6 +21,7 @@
     <symbol id="i-crown" viewBox="0 0 24 24"><path d="M3 18h18M4 8l4 4 4-7 4 7 4-4v7H4Z"/><path d="M7 21h10"/></symbol>
     <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.8"/></symbol>
     <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16.5H6.5A2.5 2.5 0 0 0 4 22Z"/><path d="M4 5.5v13"/><path d="M8 7h8M8 10.5h6"/></symbol>
+    <symbol id="i-loop" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/><path d="M4 20v-5h5"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="m5 5 14 14M19 5 5 19"/></symbol>
@@ -65,8 +66,11 @@
         <button class="nav-item" data-route="watch">
           <svg class="icon"><use href="#i-eye"></use></svg><span>自选监控</span><em>04</em>
         </button>
+        <button class="nav-item" data-route="learning">
+          <svg class="icon"><use href="#i-loop"></use></svg><span>学习复盘</span><em>05</em>
+        </button>
         <button class="nav-item" data-route="method">
-          <svg class="icon"><use href="#i-book"></use></svg><span>方法与风险</span><em>05</em>
+          <svg class="icon"><use href="#i-book"></use></svg><span>方法与风险</span><em>06</em>
         </button>
       </nav>
 
@@ -121,7 +125,7 @@
       <div id="viewRoot" class="view-root"></div>
 
       <footer class="footer">
-        <span>A股雷达 · StockLens v0.4</span>
+        <span>A股雷达 · StockLens v0.6</span>
         <span>数据：东方财富公开接口 · 模型：可解释因子 + 时间切分验证</span>
         <span>仅用于个人研究，不构成任何投资建议或收益承诺。</span>
       </footer>
@@ -141,6 +145,6 @@
   </div>
 
   <script src="vendor/echarts.min.js"></script>
-  <script src="app.js?v=0.4.1"></script>
+  <script src="app.js?v=0.6.0"></script>
 </body>
 </html>

@@ -167,6 +167,9 @@ class Handler(BaseHTTPRequestHandler):
                 force = query.get("refresh", ["0"])[0] == "1"
                 self.send_json(get_service().get_leaders(force=force))
                 return
+            if path == "/api/learning":
+                self.send_json(get_service().get_learning())
+                return
             if path.startswith("/api/stock/"):
                 code = path.rsplit("/", 1)[-1]
                 profile = query.get("profile", ["balanced"])[0]
