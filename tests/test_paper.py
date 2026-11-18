@@ -72,6 +72,64 @@ class PaperStoreTests(unittest.TestCase):
         self.assertEqual(summary["pendingTrades"], 0)
         self.assertEqual(summary["resolvedTrades"], 0)
 
+    def test_settles_on_the_bar_immediately_after_signal_day(self) -> None:
+        # A later bar must never be mistaken for "the next session".
+        self.store.record_day("2026-11-18", "balanced", picks())
+        bars = [
+            {"date": "2026-11-18", "open": 9.0, "close": 9.0},
+            {"date": "2026-11-19", "open": 10.0, "close": 10.5},
+            {"date": "2026-11-20", "open": 20.0, "close": 40.0},
+        ]
+        summary = self.store.refresh(lambda secid: bars, "2026-11-20", True)
+        self.assertEqual(summary["resolvedTrades"], 1)
+        self.assertEqual(summary["latest"]["entryDate"], "2026-11-19")
+        self.assertEqual(summary["latest"]["positions"][0]["entryOpen"], 10.0)
+
+    def test_does_not_guess_when_window_lost_the_signal_day(self) -> None:
+        # The K-line window starts after the signal day: the true next bar is
+        # unknown, so the trade must stay pending instead of settling on 11-25.
+        self.store.record_day("2026-11-18", "balanced", picks())
+        bars = [
+            {"date": "2026-11-25", "open": 11.0, "close": 12.0},
+            {"date": "2026-11-26", "open": 12.0, "close": 13.0},
+        ]
+        summary = self.store.refresh(lambda secid: bars, "2026-11-26", True)
+        self.assertEqual(summary["resolvedTrades"], 0)
+        self.assertEqual(summary["pendingTrades"], 1)
+        self.assertEqual(summary["totalPnl"], 0.0)
+
+    def test_marks_trade_unresolvable_when_signal_day_is_too_old(self) -> None:
+        # Older than the settle window: drop it explicitly rather than persist a
+        # wrong P&L computed from a much later session.
+        self.store.record_day("2026-10-01", "balanced", picks())
+        bars = [
+            {"date": "2026-11-25", "open": 11.0, "close": 12.0},
+            {"date": "2026-11-26", "open": 12.0, "close": 13.0},
+        ]
+        summary = self.store.refresh(lambda secid: bars, "2026-11-26", True)
+        self.assertEqual(summary["resolvedTrades"], 0)
+        self.assertEqual(summary["pendingTrades"], 0)
+        self.assertEqual(summary["expiredTrades"], 1)
+        self.assertIsNone(summary["latest"])
+        self.assertIsNone(summary["latestPending"])
+    def test_expires_old_trade_when_bars_never_reach_the_signal_day(self) -> None:
+        # Suspended or delisted names keep returning old bars only; the trade must
+        # not sit in "pending" forever.
+        self.store.record_day("2026-10-01", "balanced", picks())
+        bars = [{"date": "2026-09-30", "open": 9.0, "close": 9.0}]
+        summary = self.store.refresh(lambda secid: bars, "2026-11-26", True)
+        self.assertEqual(summary["expiredTrades"], 1)
+        self.assertEqual(summary["pendingTrades"], 0)
+        self.assertEqual(summary["resolvedTrades"], 0)
+
+    def test_empty_kline_never_permanently_expires_a_trade(self) -> None:
+        # A transient empty response must be retried, not treated as proof that the
+        # window moved past the signal day.
+        self.store.record_day("2026-10-01", "balanced", picks())
+        summary = self.store.refresh(lambda secid: [], "2026-11-26", True)
+        self.assertEqual(summary["expiredTrades"], 0)
+        self.assertEqual(summary["pendingTrades"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,9 @@ Rules:
   by the 100-share lot size. Costs are approximated at 0.15% round trip.
 - A pending trade resolves after the next session has closed; same-day partial
   bars are never used as the final result.
+- Settlement only accepts the bar immediately after the signal day. When the
+  K-line window no longer reaches back to that day the trade is marked
+  ``unresolvable`` instead of being settled on a wrong, much later bar.
 """
 
 from __future__ import annotations
@@ -23,11 +26,18 @@ from app.config import CN_TZ
 
 
 class PaperStore:
-    def __init__(self, path: Path, initial_capital: float = 10_000.0, cost_rate: float = 0.0015):
+    def __init__(
+        self,
+        path: Path,
+        initial_capital: float = 10_000.0,
+        cost_rate: float = 0.0015,
+        max_settle_lag_days: int = 20,
+    ):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.initial_capital = initial_capital
         self.cost_rate = cost_rate
+        self.max_settle_lag_days = max_settle_lag_days
         self._lock = Lock()
         self._state = self._load()
 
@@ -130,6 +140,8 @@ class PaperStore:
                     continue
                 evaluated = []
                 missing = False
+                expired = False
+                expiry_reason = ""
                 for position in trade.get("positions") or []:
                     secid = position.get("secid")
                     if not secid:
@@ -140,12 +152,24 @@ class PaperStore:
                     except Exception:  # noqa: BLE001 - retry next refresh
                         missing = True
                         break
-                    next_bar = next(
-                        (bar for bar in bars if bar.get("date", "") > signal_date),
-                        None,
-                    )
-                    if not next_bar:
-                        missing = True
+                    next_bar, reason = self._bar_after(bars, signal_date)
+                    if next_bar is None:
+                        # Only real bars can prove the trade is past the window we can
+                        # still reach. An empty response is a transient data problem,
+                        # and expiring on it would destroy the record for good.
+                        stale = (
+                            self._calendar_days(signal_date, today)
+                            > self.max_settle_lag_days
+                        )
+                        if stale and bars:
+                            expired = True
+                            expiry_reason = (
+                                "信号日已超出可回溯的日K窗口，无法确认紧邻的次日 bar"
+                                if reason == "window"
+                                else "该标的日K长期未推进到信号日之后"
+                            )
+                        else:
+                            missing = True
                         break
                     eval_date = next_bar.get("date") or ""
                     if eval_date > today:
@@ -172,6 +196,12 @@ class PaperStore:
                             "pnl": round(pnl, 2),
                         }
                     )
+                if expired:
+                    trade["status"] = "unresolvable"
+                    trade["reason"] = f"{expiry_reason}；为避免用错价格结算，本条标记为失效"
+                    trade["totalPnl"] = None
+                    changed = True
+                    continue
                 if missing or not evaluated:
                     continue
                 total_pnl = sum(float(item["pnl"]) for item in evaluated)
@@ -186,10 +216,49 @@ class PaperStore:
                 self._save_locked()
             return self._summary_locked()
 
+    @staticmethod
+    def _bar_after(bars: list[dict], signal_date: str) -> tuple[dict | None, str]:
+        """Return the bar that directly follows ``signal_date``.
+
+        The K-line window is short (about 20 sessions), so a pending trade from
+        weeks ago no longer contains the signal day. In that case the caller must
+        not guess: taking the first newer bar would silently settle the trade on
+        the wrong session. ``reason`` is ``"ok"``, ``"pending"`` (the bar does not
+        exist yet, or the response was empty) or ``"window"`` (the window already
+        starts after the signal day, so the true bar is unknowable).
+        """
+        dates = [bar.get("date") or "" for bar in bars]
+        if not dates:
+            # An empty response is a transient data problem, not evidence that the
+            # window has moved past the signal day. Expiring on it would destroy the
+            # record for good, so treat it as "not available yet".
+            return None, "pending"
+        index = -1
+        for position, value in enumerate(dates):
+            if value == signal_date:
+                index = position
+        if index >= 0:
+            if index + 1 < len(bars):
+                return bars[index + 1], "ok"
+            return None, "pending"
+        if dates[-1] and dates[-1] <= signal_date:
+            return None, "pending"
+        return None, "window"
+
+    @staticmethod
+    def _calendar_days(start: str, end: str) -> int:
+        try:
+            first = datetime.strptime(start[:10], "%Y-%m-%d").date()
+            second = datetime.strptime(end[:10], "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return 0
+        return (second - first).days
+
     def _summary_locked(self) -> dict:
         trades = self._state.get("trades") or []
         resolved = [trade for trade in trades if trade.get("status") == "resolved"]
         pending = [trade for trade in trades if trade.get("status") == "pending"]
+        expired = [trade for trade in trades if trade.get("status") == "unresolvable"]
         total_pnl = sum(float(trade.get("totalPnl") or 0.0) for trade in resolved)
         wins = sum(1 for trade in resolved if float(trade.get("totalPnl") or 0) > 0)
         return {
@@ -200,11 +269,15 @@ class PaperStore:
             "totalReturnPct": round(total_pnl / self.initial_capital * 100, 3),
             "resolvedTrades": len(resolved),
             "pendingTrades": len(pending),
+            "expiredTrades": len(expired),
             "winRate": round(wins / len(resolved), 4) if resolved else None,
             "latest": resolved[-1] if resolved else None,
             "latestPending": pending[-1] if pending else None,
             "recentTrades": resolved[-8:][::-1],
-            "note": "每日固定 10,000 元等权模拟；次日开盘买入、次日收盘计值，含 0.15% 估算成本；不复利，忽略 100 股整数限制。",
+            "note": (
+                "每日固定 10,000 元等权模拟；次日开盘买入、次日收盘计值，含 0.15% 估算成本；"
+                "不复利，忽略 100 股整数限制；超出日K窗口仍无法确认次日 bar 的旧记录标记为失效，不参与统计。"
+            ),
         }
 
     def summary(self) -> dict:

@@ -125,10 +125,24 @@ def _fit_isotonic(probabilities: np.ndarray, y: np.ndarray, bins: int = 10) -> d
         weights[index:index + 2] = [total_weight]
         if index > 0:
             index -= 1
+    # A weak model can violate monotonicity in every adjacent pair, in which case
+    # PAVA merges all bins into a single point. Mapping through np.interp would
+    # then return that one constant for every input, so every stock would display
+    # the same probability and the cross-section ranking would collapse. Fall back
+    # to Platt instead of shipping a constant curve.
+    if len(xs) < 2:
+        return None
+    if xs[-1] - xs[0] < 1e-9:
+        return None
+    # Check the spread *after* clamping: bins that all land on the same bound would
+    # still be a constant curve even though their raw means differ.
+    clamped = [round(min(0.95, max(0.05, value)), 6) for value in ys]
+    if max(clamped) - min(clamped) < 1e-6:
+        return None
     return {
         "type": "isotonic",
         "x": [round(value, 6) for value in xs],
-        "y": [round(min(0.95, max(0.05, value)), 6) for value in ys],
+        "y": clamped,
     }
 
 
@@ -136,6 +150,11 @@ def _calibrate(probabilities: np.ndarray, calibration: dict) -> np.ndarray:
     if calibration.get("type") == "isotonic":
         xs = np.asarray(calibration["x"], dtype=float)
         ys = np.asarray(calibration["y"], dtype=float)
+        # Stored artifacts can still carry a curve that was fitted before this
+        # guard existed; a single point would turn every prediction into the same
+        # constant, so refuse it and keep the raw probabilities instead.
+        if xs.size < 2 or ys.size < 2 or float(xs.max() - xs.min()) < 1e-9:
+            return np.clip(probabilities, 0.01, 0.99)
         return np.interp(probabilities, xs, ys)
     a = float(calibration.get("a", 1.0))
     b = float(calibration.get("b", 0.0))
@@ -223,7 +242,7 @@ def train_model(samples: list[dict], horizon: int = 1) -> dict:
         )
     importance.sort(key=lambda item: item["abs_weight"], reverse=True)
 
-    auc = metrics["auc"]
+    auc = raw_metrics["auc"]
     if auc >= 0.56 and metrics["validation_samples"] >= 1500:
         confidence = "high"
     elif auc >= 0.53:
@@ -239,7 +258,12 @@ def train_model(samples: list[dict], horizon: int = 1) -> dict:
         "calibration": calibration,
         "metrics": {
             **metrics,
+            "auc_raw": raw_metrics["auc"],
             "raw_brier": raw_metrics["brier"],
+            "calibration_type": str(calibration.get("type") or ""),
+            "calibration_points": (
+                len(calibration["x"]) if calibration.get("x") is not None else None
+            ),
             "train_samples": int(len(train_rows)),
             "all_samples": int(len(samples)),
             "date_from": dates[0],

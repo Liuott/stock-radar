@@ -14,7 +14,7 @@ const PAGE_META = {
 };
 
 const PROFILE_LABELS = { conservative: '稳健', balanced: '均衡', aggressive: '进攻' };
-const CONFIDENCE_LABELS = { high: '高置信度', medium: '中置信度', low: '低置信度' };
+const CONFIDENCE_LABELS = { high: '模型高置信度', medium: '模型中置信度', low: '模型低置信度' };
 
 const state = {
   route: 'overview',
@@ -904,7 +904,7 @@ function renderPicks() {
         <div class="pick-price">
           <strong>${fmtNum(pick.price)}</strong>
           <span class="pct ${pctClass(pick.pct)}">${fmtPct(pick.pct)}</span>
-          <span class="meta">模型分位 Top ${fmtNum((1 - (pick.model_percentile || 0)) * 100, 0)}% · 量比 ${fmtNum(pick.volume_ratio, 2)}</span>
+          <span class="meta">${metrics.usable ? `模型分位 Top ${Math.max(1, Math.round((1 - (pick.model_percentile || 0)) * 100))}% · ` : ''}量比 ${fmtNum(pick.volume_ratio, 2)}</span>
         </div>
         <div class="pick-spark">${sparkline(pick.spark, pctClass(pick.pct) === 'up' ? '#ff5d6d' : '#22c58b', 420, 36)}</div>
         <div class="execution-box ${esc(execution.tone || 'observe')}">
@@ -1198,7 +1198,7 @@ function renderLearning() {
     <article class="card paper-card">
       <div class="card-head">
         <div><div class="eyebrow">PAPER PORTFOLIO · CNY 10,000</div><h2>1 万元模拟盘</h2></div>
-        <span class="badge ${paperLatest ? 'gold' : ''}">${paperLatest ? '已结算' : paperPending ? '待次日结算' : '等待候选'}</span>
+        <span class="badge ${paperLatest ? 'gold' : ''}">${paperLatest ? '已结算' : paperPending ? '待次日结算' : paper.expiredTrades ? paper.expiredTrades + ' 条已失效' : '等待候选'}</span>
       </div>
       <div class="paper-stats">
         <div><span>模拟权益</span><b>${fmtNum(paper.equity || 10000, 2)}</b><small>初始 10,000</small></div>
@@ -1213,7 +1213,7 @@ function renderLearning() {
             <thead><tr><th>标的</th><th>分配金额</th><th>买入 → 卖出</th><th>收益</th><th>盈亏</th></tr></thead>
             <tbody>${paperRows}</tbody>
           </table>
-        </div>` : `<div class="learning-empty">${icon('chart')}<h3>还没有模拟交易</h3><p>在“今日候选”生成候选后，系统会自动用 1 万元等权记录；次日开盘买入、收盘结算。</p><button class="ghost-btn" data-route="picks">去生成候选</button></div>`}
+        </div>` : `<div class="learning-empty">${icon('chart')}<h3>${paper.expiredTrades ? '历史记录已过期' : '还没有模拟交易'}</h3><p>${paper.expiredTrades ? paper.expiredTrades + ' 条记录的信号日已超出可回溯的日K窗口，无法确认紧邻的次日 bar，已标记失效而不结算。' : '在“今日候选”生成候选后，系统会自动用 1 万元等权记录；次日开盘买入、收盘结算。'}</p><button class="ghost-btn" data-route="picks">去生成候选</button></div>`}
       ${paperPending && paperLatest ? `<p class="micro" style="padding:0 18px 4px">另有 ${esc(paperPending.signalDate)} 的候选已记录，等待次日开盘/收盘结算。</p>` : ''}
       <p class="micro" style="padding:0 18px 4px"><b style="color:var(--text-2);font-weight:500">系统决策：</b>均衡档候选，等权分配，最多 5 只；次日开盘买入，次日收盘计值。</p>
       <p class="micro" style="padding:0 18px 15px">${esc(paper.note || '每日固定 10,000 元等权模拟；次日开盘买入、次日收盘计值；含 0.15% 估算成本。')}</p>

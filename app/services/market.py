@@ -10,6 +10,7 @@ from threading import Lock
 
 from app.cache import DiskJsonCache
 from app.config import (
+    APP_VERSION,
     BENCHMARK_SECID,
     CN_TZ,
     DEFAULT_PROFILE,
@@ -81,6 +82,34 @@ def _session_progress(now: datetime) -> float:
     if afternoon_open <= minutes <= afternoon_close:
         return min(1.0, (120.0 + minutes - afternoon_open) / 240.0)
     return 1.0
+
+
+def rank_candidates(rows: list[dict], model_usable: bool) -> None:
+    """Rank candidate rows in place, deterministically.
+
+    Equal probabilities are common in a weak-signal regime, and ``rows`` arrives in
+    network completion order, so every tie is broken by code. Without that, the
+    displayed percentile and the final order would change between refreshes.
+
+    When the model is not usable its percentile carries no information, so it is
+    held at a neutral 50 instead of letting tie order pick the winners.
+    """
+    ordered = sorted(rows, key=lambda item: (item["probability"], item.get("code") or ""))
+    count = max(1, len(ordered))
+    for index, row in enumerate(ordered):
+        row["model_percentile"] = round((index + 1) / count, 4)
+        row["model_rank"] = count - index
+    for row in rows:
+        if model_usable:
+            score = (
+                0.50 * (row["model_percentile"] * 100.0)
+                + 0.35 * row["rule_score"]
+                + 0.15 * row["risk_score"]
+            )
+        else:
+            score = 0.15 * 50.0 + 0.68 * row["rule_score"] + 0.17 * row["risk_score"]
+        row["score"] = round(score, 1)
+    rows.sort(key=lambda item: (-item["score"], item.get("code") or ""))
 
 
 class MarketService:
@@ -875,31 +904,8 @@ class MarketService:
                     }
                 )
 
-            # Rank the model cross-section rather than trusting an absolute
-            # probability in a weak-signal regime. This keeps the candidate list
-            # honest when the base rate itself is below 50%.
-            model_ordered = sorted(rows, key=lambda item: item["probability"])
-            row_count = max(1, len(model_ordered))
-            for index, row in enumerate(model_ordered):
-                row["model_percentile"] = round((index + 1) / row_count, 4)
-                row["model_rank"] = row_count - index
             model_usable = bool(model_artifact and model_artifact["metrics"].get("usable"))
-            for row in rows:
-                percentile_score = row["model_percentile"] * 100.0
-                if model_usable:
-                    final_score = (
-                        0.50 * percentile_score
-                        + 0.35 * row["rule_score"]
-                        + 0.15 * row["risk_score"]
-                    )
-                else:
-                    final_score = (
-                        0.15 * percentile_score
-                        + 0.68 * row["rule_score"]
-                        + 0.17 * row["risk_score"]
-                    )
-                row["score"] = round(final_score, 1)
-            rows.sort(key=lambda item: item["score"], reverse=True)
+            rank_candidates(rows, model_usable)
             self._analysis = {
                 "rows": rows,
                 "model": model_artifact,
@@ -1017,6 +1023,8 @@ class MarketService:
         now = now_cn()
         after_close = now.hour * 60 + now.minute >= 15 * 60 + 5
         if after_close:
+            # 20 bars comfortably covers the paper store's settle window; the store
+            # refuses to settle when the window no longer contains the signal day.
             paper_summary = self.paper.refresh(
                 lambda secid: self.provider.fetch_kline(secid, 20),
                 analysis["today"],
@@ -1115,12 +1123,18 @@ class MarketService:
         model_percentile = None
         relative_edge = None
         base_rate = None
+        model_usable = False
         if self._analysis:
+            model_usable = bool(
+                (self._analysis.get("model") or {}).get("metrics", {}).get("usable")
+            )
             match = next((row for row in self._analysis["rows"] if row["code"] == code), None)
             if match:
                 probability = match["probability"]
                 composite_score = match["score"]
-                model_percentile = match["model_percentile"]
+                # A percentile derived from tied probabilities says nothing about this
+                # stock, so it is only exposed when the model is actually usable.
+                model_percentile = match["model_percentile"] if model_usable else None
                 relative_edge = match["relative_edge"]
                 base_rate = match["base_rate"]
         chart = chart_payload(bars, 120)
@@ -1148,6 +1162,7 @@ class MarketService:
             "probability": probability,
             "composite_score": composite_score,
             "model_percentile": model_percentile,
+            "model_usable": model_usable,
             "relative_edge": relative_edge,
             "base_rate": base_rate,
             "chart": chart,
@@ -1466,7 +1481,7 @@ class MarketService:
     def method_card() -> dict:
         return {
             "app": "A股雷达",
-            "version": "0.1.0",
+            "version": APP_VERSION,
             "pipeline": [
                 {"step": "01", "title": "数据层", "text": "东方财富公开行情：全市场快照、指数、板块、日K。内存与磁盘双层缓存，失败时降级到陈旧数据并明确标记。"},
                 {"step": "02", "title": "因子层", "text": "趋势、动量、量能、RSI、MACD、相对强弱、波动风险、资金/估值八组可解释因子。"},
