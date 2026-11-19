@@ -128,6 +128,11 @@ class MarketService:
         self._snapshot_stale = False
         self._snapshot_meta: dict = {}
         self._snapshot_failed_at = 0.0
+        # Make a cold start during a source outage useful immediately: the
+        # cache is served for a short cooldown, then a background refresh is
+        # attempted on the next request.
+        if self._restore_snapshot_cache():
+            self._snapshot_failed_at = time.time()
         self._snapshot_lock = Lock()
         self._overview: dict | None = None
         self._overview_at = 0.0
@@ -184,7 +189,7 @@ class MarketService:
                 not force
                 and self._snapshot is not None
                 and self._snapshot_stale
-                and now - self._snapshot_failed_at < 15
+                and now - self._snapshot_failed_at < 60
             ):
                 return self._snapshot
             try:

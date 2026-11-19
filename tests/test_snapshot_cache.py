@@ -19,6 +19,12 @@ class SnapshotFallbackTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.service = MarketService(provider=FailingProvider())
+        # The service may have loaded the real local cache during __init__;
+        # isolate the test from the user's runtime data.
+        self.service._snapshot = None
+        self.service._snapshot_at = 0.0
+        self.service._snapshot_stale = False
+        self.service._snapshot_failed_at = 0.0
         self.service.snapshot_cache = DiskJsonCache(Path(self.temp.name))
         self.rows = [{"code": f"{index:06d}", "name": "x", "price": 1.0} for index in range(120)]
 
