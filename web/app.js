@@ -521,7 +521,11 @@ function updateSidebar(overview) {
   if (overview.market?.phaseNote) {
     showNotice(overview.market.phaseNote, 'danger');
   } else if (overview.dataQuality?.error) {
-    showNotice(`行情源提示：${friendlySourceError(overview.dataQuality.error)}`, 'danger');
+    const coverage = overview.dataQuality?.coverage;
+    const coverageNote = coverage !== null && coverage !== undefined && coverage < 0.95
+      ? ` 快照覆盖 ${(coverage * 100).toFixed(1)}%，涨跌家数/成交额可能偏低。`
+      : '';
+    showNotice(`行情源提示：${friendlySourceError(overview.dataQuality.error)}${coverageNote}`, 'danger');
   } else if (quoteDate && quoteDate !== todayCN && overview.market?.is_trading_day) {
     showNotice(`行情最新日期为 ${quoteDate}，当前可能休市或数据源尚未更新。`, 'danger');
   } else if (overview.dataQuality?.coverage !== null && overview.dataQuality?.coverage !== undefined && overview.dataQuality.coverage < 0.95) {
