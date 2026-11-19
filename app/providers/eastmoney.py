@@ -8,11 +8,15 @@ terms and do not redistribute the data commercially.
 
 from __future__ import annotations
 
+import json
 import math
+import shutil
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
+from urllib.parse import urlencode
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -172,6 +176,59 @@ class EastmoneyProvider:
         self._session = self._build_session()
         self.last_snapshot_meta: dict = {}
         self.last_limit_up_total = 0
+        self._breaker_lock = threading.Lock()
+        self._cooldown_until = 0.0
+        self._curl = shutil.which("curl") or shutil.which("curl.exe")
+        self._curl_until = 0.0
+
+    def _curl_json(self, url: str, params: dict, timeout: float) -> dict:
+        """Use the system curl/Schannel client as a transport fallback.
+
+        Some networks terminate the OpenSSL fingerprint used by requests with
+        ``RemoteDisconnected`` while the OS curl client succeeds. Keeping this
+        fallback means a TLS-level block does not take the whole app down.
+        """
+        if not self._curl:
+            raise EastmoneyError("system curl is not available")
+        target = f"{url}?{urlencode(params, doseq=True)}"
+        command = [
+            self._curl,
+            "-sS",
+            "--http1.1",
+            "--compressed",
+            "--max-time",
+            str(max(2, int(timeout))),
+            "-A",
+            EASTMONEY_HEADERS["User-Agent"],
+            "-e",
+            EASTMONEY_HEADERS["Referer"],
+            "-H",
+            f"Accept: {EASTMONEY_HEADERS['Accept']}",
+            target,
+        ]
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    timeout=timeout + 3,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                last_error = exc
+            else:
+                if completed.returncode == 0:
+                    payload = json.loads(completed.stdout.decode("utf-8", "replace"))
+                    rc = payload.get("rc")
+                    if rc not in (0, None):
+                        raise EastmoneyError(f"upstream rc={rc}")
+                    return payload
+                detail = completed.stderr.decode("utf-8", "replace").strip()[:160]
+                last_error = EastmoneyError(f"curl exit {completed.returncode}: {detail}")
+            if attempt == 0:
+                time.sleep(0.6)
+        raise EastmoneyError(f"curl transport failed: {last_error}") from last_error
 
     @staticmethod
     def _build_session() -> requests.Session:
@@ -191,23 +248,76 @@ class EastmoneyProvider:
             self._local.session = self._build_session()
         return self._local.session
 
-    def _get_json(self, url: str, params: dict, timeout: float | None = None) -> dict:
+    def is_cooling_down(self) -> bool:
+        with self._breaker_lock:
+            return time.time() < self._cooldown_until
+
+    def _trip_breaker(self) -> None:
+        # If the upstream closes the connection repeatedly, hammering it with
+        # every optional panel makes the whole app feel frozen. Fail fast for a
+        # short window; the background refresh will try again later.
+        with self._breaker_lock:
+            self._cooldown_until = max(self._cooldown_until, time.time() + 25.0)
+
+    def _reset_breaker(self) -> None:
+        with self._breaker_lock:
+            self._cooldown_until = 0.0
+
+    def _get_json(
+        self,
+        url: str,
+        params: dict,
+        timeout: float | None = None,
+        attempts: int | None = None,
+    ) -> dict:
+        if self.is_cooling_down():
+            raise EastmoneyError("upstream source cooling down after connection failures")
+        effective_timeout = timeout or self.timeout
+        total_attempts = max(1, attempts or self.retries)
         last_error: Exception | None = None
-        for attempt in range(self.retries):
+
+        # After the first TLS-level failure, use the OS curl client for a while.
+        if self._curl and time.time() < self._curl_until:
+            try:
+                payload = self._curl_json(url, params, effective_timeout)
+                self._reset_breaker()
+                return payload
+            except Exception as exc:  # noqa: BLE001 - try requests below
+                last_error = exc
+
+        for attempt in range(total_attempts):
             try:
                 response = self.session.get(
-                    url, params=params, timeout=timeout or self.timeout
+                    url, params=params, timeout=effective_timeout
                 )
                 response.raise_for_status()
                 payload = response.json()
                 rc = payload.get("rc")
                 if rc not in (0, None):
                     raise EastmoneyError(f"upstream rc={rc}")
+                self._reset_breaker()
                 return payload
             except Exception as exc:  # noqa: BLE001 - retry network/JSON failures
                 last_error = exc
-                if attempt < self.retries - 1:
-                    time.sleep(0.35 * (attempt + 1))
+                if self._curl:
+                    try:
+                        payload = self._curl_json(url, params, effective_timeout)
+                        self._curl_until = time.time() + 300
+                        self._reset_breaker()
+                        return payload
+                    except Exception as curl_exc:  # noqa: BLE001
+                        last_error = curl_exc
+                if isinstance(
+                    exc,
+                    (
+                        requests.exceptions.ConnectionError,
+                        requests.exceptions.Timeout,
+                        requests.exceptions.ChunkedEncodingError,
+                    ),
+                ):
+                    self._trip_breaker()
+                if attempt < total_attempts - 1:
+                    time.sleep(min(1.5, 0.45 * (attempt + 1)))
         raise EastmoneyError(f"request failed: {url}: {last_error}") from last_error
 
     def fetch_snapshot(self, page_size: int = 100, workers: int = 8) -> list[dict]:
@@ -290,7 +400,8 @@ class EastmoneyProvider:
                     ]
                 ),
             },
-            timeout=15,
+            timeout=6,
+            attempts=1,
         )
         rows = (payload.get("data") or {}).get("diff") or []
         return [normalize_index(row) for row in rows]
@@ -327,7 +438,8 @@ class EastmoneyProvider:
                 "date": date,
                 "_": int(time.time() * 1000),
             },
-            timeout=15,
+            timeout=6,
+            attempts=1,
         )
         data = payload.get("data") or {}
         rows = data.get("pool") or []
@@ -381,7 +493,8 @@ class EastmoneyProvider:
                 "fs": "m:90+t:2",
                 "fields": "f2,f3,f4,f12,f13,f14,f62,f104,f105,f128,f136,f140,f141",
             },
-            timeout=15,
+            timeout=6,
+            attempts=1,
         )
         rows = (payload.get("data") or {}).get("diff") or []
         result = []
@@ -420,7 +533,8 @@ class EastmoneyProvider:
                 ),
                 "secids": ",".join(secids[:50]),
             },
-            timeout=15,
+            timeout=8,
+            attempts=2,
         )
         rows = (payload.get("data") or {}).get("diff") or []
         result = []
@@ -442,7 +556,8 @@ class EastmoneyProvider:
                 "fields1": "f1,f2,f3,f4,f5,f6",
                 "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
             },
-            timeout=15,
+            timeout=10,
+            attempts=2,
         )
         lines = (payload.get("data") or {}).get("klines") or []
         bars = [bar for line in lines if (bar := parse_kline_line(line))]

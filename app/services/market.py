@@ -17,6 +17,7 @@ from app.config import (
     DISCLAIMER,
     INDEXES,
     KLINE_CACHE_DIR,
+    CACHE_DIR,
     LEARNING_FILE,
     PAPER_FILE,
     PROFILES,
@@ -118,6 +119,7 @@ class MarketService:
     def __init__(self, provider: EastmoneyProvider | None = None):
         self.provider = provider or EastmoneyProvider()
         self.cache = DiskJsonCache(KLINE_CACHE_DIR)
+        self.snapshot_cache = DiskJsonCache(CACHE_DIR)
         self.watchlist = WatchlistStore(WATCHLIST_FILE)
         self.learning = LearningStore(LEARNING_FILE)
         self.paper = PaperStore(PAPER_FILE)
@@ -125,6 +127,7 @@ class MarketService:
         self._snapshot_at = 0.0
         self._snapshot_stale = False
         self._snapshot_meta: dict = {}
+        self._snapshot_failed_at = 0.0
         self._snapshot_lock = Lock()
         self._overview: dict | None = None
         self._overview_at = 0.0
@@ -148,6 +151,26 @@ class MarketService:
         self._errors: list[str] = []
 
     # ------------------------------------------------------------------ data
+    def _snapshot_cache_payload(self) -> dict:
+        return {
+            "savedAt": time.time(),
+            "rows": self._snapshot,
+            "meta": self._snapshot_meta,
+        }
+
+    def _restore_snapshot_cache(self) -> bool:
+        payload, _ = self.snapshot_cache.read("snapshot", 10**9)
+        if not isinstance(payload, dict):
+            return False
+        rows = payload.get("rows")
+        if not isinstance(rows, list) or len(rows) < 120:
+            return False
+        self._snapshot = rows
+        self._snapshot_at = float(payload.get("savedAt") or 0.0)
+        self._snapshot_stale = True
+        self._snapshot_meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+        return True
+
     def get_snapshot(self, force: bool = False) -> list[dict]:
         with self._snapshot_lock:
             now = time.time()
@@ -157,18 +180,33 @@ class MarketService:
                 and now - self._snapshot_at < SNAPSHOT_TTL
             ):
                 return self._snapshot
+            if (
+                not force
+                and self._snapshot is not None
+                and self._snapshot_stale
+                and now - self._snapshot_failed_at < 15
+            ):
+                return self._snapshot
             try:
                 rows = self.provider.fetch_snapshot()
                 deduped = {row["code"]: row for row in rows}
                 self._snapshot = list(deduped.values())
                 self._snapshot_at = time.time()
                 self._snapshot_stale = False
+                self._snapshot_failed_at = 0.0
                 self._snapshot_meta = dict(getattr(self.provider, "last_snapshot_meta", {}))
                 self._errors = [error for error in self._errors if not error.startswith("snapshot:")]
+                try:
+                    self.snapshot_cache.write("snapshot", self._snapshot_cache_payload())
+                except Exception:  # noqa: BLE001 - cache write must not break quotes
+                    pass
                 return self._snapshot
             except Exception as exc:  # noqa: BLE001 - stale cache is useful
+                if self._snapshot is None:
+                    self._restore_snapshot_cache()
                 if self._snapshot is not None:
                     self._snapshot_stale = True
+                    self._snapshot_failed_at = time.time()
                     self._errors.append(f"snapshot: {exc}")
                     self._errors = self._errors[-5:]
                     return self._snapshot
@@ -394,6 +432,13 @@ class MarketService:
             now = time.time()
             if not force and self._overview and now - self._overview_at < OVERVIEW_TTL:
                 return self._overview
+            if (
+                not force
+                and self._overview
+                and self._snapshot_stale
+                and now - self._overview_at < 60
+            ):
+                return self._overview
             snap = self.get_snapshot(force)
             phase = market_phase()
             try:
@@ -477,7 +522,13 @@ class MarketService:
                     "quoteDate": latest_bar or today,
                     "coverage": self._snapshot_meta.get("coverage"),
                     "pageFailures": self._snapshot_meta.get("page_failures"),
-                    "error": index_error or (self._errors[-1] if self._errors else None),
+                    "error": index_error
+                    or (
+                        "行情源暂不可用，已展示最近一次成功快照"
+                        if self._snapshot_stale
+                        else None
+                    ),
+                    "snapshotError": self._errors[-1] if self._errors else None,
                     "latencyNote": "公开接口通常有数秒延迟，非 Level-2；盘中数据仅供参考",
                 },
                 "profiles": list(PROFILES.values()),
@@ -582,6 +633,13 @@ class MarketService:
         with self._leaders_lock:
             now = time.time()
             if not force and self._leaders and now - self._leaders_at < 15:
+                return self._leaders
+            if (
+                not force
+                and self._leaders
+                and self._snapshot_stale
+                and now - self._leaders_at < 30
+            ):
                 return self._leaders
             snap = self.get_snapshot()
             by_code = {item["code"]: item for item in snap}
@@ -936,7 +994,15 @@ class MarketService:
         cached = self._pick_cache.get(profile_key)
         if not force and cached and now - cached[0] < PICK_TTL:
             return cached[1]
-        analysis = self._build_analysis(force)
+        try:
+            analysis = self._build_analysis(force)
+        except Exception as exc:  # noqa: BLE001 - keep the last good picks during source outages
+            if cached:
+                response = dict(cached[1])
+                response["stale"] = True
+                response["sourceError"] = str(exc)
+                return response
+            raise
         model = analysis["model"]
         base_rate = float(model["metrics"].get("base_rate", 0.5)) if model else 0.5
         model_usable = bool(model and model["metrics"].get("usable"))

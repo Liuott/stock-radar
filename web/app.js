@@ -494,6 +494,14 @@ function showNotice(message, type = '') {
   el.innerHTML = `${icon('alert')}<div>${esc(message)}</div>`;
 }
 
+function friendlySourceError(message) {
+  if (!message) return '';
+  if (/snapshot:|request failed|RemoteDisconnected|Connection aborted|ConnectionError|Read timed out/i.test(String(message))) {
+    return '行情源暂时不可用，正在展示最近一次成功快照；数据恢复后会自动刷新。';
+  }
+  return String(message);
+}
+
 function hideNotice() {
   $('#globalNotice').className = 'notice hidden';
 }
@@ -513,7 +521,7 @@ function updateSidebar(overview) {
   if (overview.market?.phaseNote) {
     showNotice(overview.market.phaseNote, 'danger');
   } else if (overview.dataQuality?.error) {
-    showNotice(`行情源提示：${overview.dataQuality.error}`, 'danger');
+    showNotice(`行情源提示：${friendlySourceError(overview.dataQuality.error)}`, 'danger');
   } else if (quoteDate && quoteDate !== todayCN && overview.market?.is_trading_day) {
     showNotice(`行情最新日期为 ${quoteDate}，当前可能休市或数据源尚未更新。`, 'danger');
   } else if (overview.dataQuality?.coverage !== null && overview.dataQuality?.coverage !== undefined && overview.dataQuality.coverage < 0.95) {
@@ -822,6 +830,9 @@ function renderPicks() {
   const modelWeak = !metrics.usable || (dailyAuc !== undefined && dailyAuc !== null && Number(dailyAuc) < 0.52);
   const baseRate = Number(data.baseRate || metrics.base_rate || 0.5);
   const noticeClass = picks.length === 0 ? ' danger' : '';
+  const staleNotice = data.stale
+    ? `<div class="notice danger">${icon('alert')}<div>行情源暂不可用，当前展示的是上一次成功候选；恢复后刷新即可更新。</div></div>`
+    : '';
   const notice = picks.length === 0
     ? ''
     : data.noPickReason
@@ -889,6 +900,7 @@ function renderPicks() {
     const risks = (pick.risks || []).slice(0, 2).map((text) => `<span class="chip warn">${esc(text)}</span>`).join('');
     const flags = (pick.flags || []).map((flag) => `<span class="chip bad">${esc(flag)}</span>`).join('');
     const weakEdge = Number(pick.relative_edge || 0) < 0.005;
+    const edgeText = Number.isFinite(Number(pick.relative_edge)) ? `${Number(pick.relative_edge) >= 0 ? '+' : ''}${(Number(pick.relative_edge) * 100).toFixed(1)}pp` : '—';
     const edgeChip = !metrics.usable
       ? '<span class="chip warn">模型未通过门槛，按规则排序</span>'
       : weakEdge
@@ -899,7 +911,6 @@ function renderPicks() {
       : `规则分 <b>${fmtNum(pick.rule_score, 1)}</b> · 风险分 <b>${fmtNum(pick.risk_score, 1)}</b> · 模型未通过门槛`;
     const learnAdjust = Number(pick.probability_adjustment_pp || 0);
     const learnChip = Math.abs(learnAdjust) >= 0.1 ? `<span class="chip">学习校准 ${learnAdjust >= 0 ? '+' : ''}${learnAdjust.toFixed(1)}pp</span>` : '';
-    const edgeText = Number.isFinite(Number(pick.relative_edge)) ? `${Number(pick.relative_edge) >= 0 ? '+' : ''}${(Number(pick.relative_edge) * 100).toFixed(1)}pp` : '—';
     const execSteps = (execution.steps || []).map((step) => `<li>${esc(step)}</li>`).join('');
     return `
       <article class="pick-card">
@@ -962,6 +973,7 @@ function renderPicks() {
         </div>
         <div class="model-health"><span class="health-dot"></span>日度截面 AUC <b>${dailyAuc ?? '—'}</b> · Rank IC <b>${rankIc ?? '—'}</b> · ${modelWeak ? '模型未通过门槛' : esc(modelConfidence)}</div>
       </div>
+      ${staleNotice}
       ${usageGuide}
       ${learningStrip}
       ${paperStrip}
@@ -1947,5 +1959,24 @@ async function init() {
   if (state.route === 'method') loadMethod();
   if (!state.overview && !state.errors.overview) renderRoute();
 }
+
+window.addEventListener('error', (event) => {
+  const message = event.error?.stack || event.message || '未知脚本错误';
+  console.error(message);
+  const el = document.querySelector('#globalNotice');
+  if (el) {
+    el.className = 'notice danger';
+    el.innerHTML = `${icon('alert')}<div>页面渲染出错：${esc(String(message).split('\n')[0])}</div>`;
+  }
+});
+window.addEventListener('unhandledrejection', (event) => {
+  const message = event.reason?.stack || event.reason?.message || String(event.reason || '未知异步错误');
+  console.error(message);
+  const el = document.querySelector('#globalNotice');
+  if (el) {
+    el.className = 'notice danger';
+    el.innerHTML = `${icon('alert')}<div>页面请求出错：${esc(String(message).split('\n')[0])}</div>`;
+  }
+});
 
 document.addEventListener('DOMContentLoaded', init);
