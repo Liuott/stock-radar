@@ -12,7 +12,7 @@
   <title>A股雷达 · StockLens</title>
   <meta name="description" content="A股实时行情、板块温度、可解释因子评分与每日观察名单。仅用于个人研究，不构成投资建议。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b111b'/%3E%3Ccircle cx='32' cy='32' r='17' fill='none' stroke='%23f4c95d' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='8' fill='none' stroke='%235cc8ff' stroke-width='3'/%3E%3Cpath d='M32 32 L50 18' stroke='%23ff5c6c' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="styles.css?v=0.6.2">
+  <link rel="stylesheet" href="styles.css?v=0.7.0">
 </head>
 <body>
   <svg class="svg-sprite" aria-hidden="true">
@@ -76,7 +76,7 @@
 
       <div class="sidebar-section">
         <div class="sidebar-label">数据连接</div>
-        <div class="source-line"><span class="live-dot" id="sourceDot"></span><span>东方财富公开行情</span><b>L1</b></div>
+        <div class="source-line"><span class="live-dot" id="sourceDot"></span><span id="sourceName">东方财富公开行情</span><b>L1</b></div>
         <p class="micro">非 Level-2，约 3–10 秒延迟。数据仅作研究参考。</p>
       </div>
 
@@ -125,8 +125,8 @@
       <div id="viewRoot" class="view-root"></div>
 
       <footer class="footer">
-        <span>A股雷达 · StockLens v0.6.2</span>
-        <span>数据：东方财富公开接口 · 模型：可解释因子 + 时间切分验证</span>
+        <span>A股雷达 · StockLens v0.7.0</span>
+        <span id="footerSource">数据：东方财富公开接口 · 模型：可解释因子 + 时间切分验证</span>
         <span>仅用于个人研究，不构成任何投资建议或收益承诺。</span>
       </footer>
     </main>
@@ -145,6 +145,6 @@
   </div>
 
   <script src="vendor/echarts.min.js"></script>
-  <script src="app.js?v=0.6.2"></script>
+  <script src="app.js?v=0.7.0"></script>
 </body>
 </html>

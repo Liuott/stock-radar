@@ -516,16 +516,33 @@ function updateSidebar(overview) {
   $('#miniAmount').textContent = fmtYi(overview.breadth?.amount_yi);
   const dot = $('#sourceDot');
   dot.className = `live-dot ${overview.dataQuality?.stale ? 'stale' : ''}`;
+  const sourceName = $('#sourceName');
+  if (sourceName) {
+    sourceName.textContent = overview.dataQuality?.source || '东方财富公开行情';
+    sourceName.title = overview.dataQuality?.degraded
+      ? '主行情源不可用，当前为降级数据源；行业/资金字段可能缺失'
+      : '主行情源';
+  }
+  const footerSource = $('#footerSource');
+  if (footerSource) {
+    footerSource.textContent = `数据：${overview.dataQuality?.source || '东方财富公开接口'} · 模型：可解释因子 + 时间切分验证`;
+  }
   const todayCN = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
   const quoteDate = overview.market?.quoteDate || overview.dataQuality?.quoteDate;
   if (overview.market?.phaseNote) {
     showNotice(overview.market.phaseNote, 'danger');
-  } else if (overview.dataQuality?.error) {
+  } else if (overview.dataQuality?.error && !overview.dataQuality?.degraded) {
     const coverage = overview.dataQuality?.coverage;
     const coverageNote = coverage !== null && coverage !== undefined && coverage < 0.95
       ? ` 快照覆盖 ${(coverage * 100).toFixed(1)}%，涨跌家数/成交额可能偏低。`
       : '';
     showNotice(`行情源提示：${friendlySourceError(overview.dataQuality.error)}${coverageNote}`, 'danger');
+  } else if (overview.dataQuality?.degraded) {
+    const coverage = overview.dataQuality?.coverage;
+    const coverageNote = coverage !== null && coverage !== undefined && coverage < 0.95
+      ? ` 快照覆盖 ${(coverage * 100).toFixed(1)}%。`
+      : '';
+    showNotice(`行情降级：当前主源不可用，价格来自 ${overview.dataQuality.source || '备用源'}；行业/资金字段部分来自本地缓存，板块龙头/涨停池可能缺失。${coverageNote}`, 'danger');
   } else if (quoteDate && quoteDate !== todayCN && overview.market?.is_trading_day) {
     showNotice(`行情最新日期为 ${quoteDate}，当前可能休市或数据源尚未更新。`, 'danger');
   } else if (overview.dataQuality?.coverage !== null && overview.dataQuality?.coverage !== undefined && overview.dataQuality.coverage < 0.95) {
@@ -1536,7 +1553,7 @@ function renderDetail(data) {
       </aside>
     </div>
     <div class="detail-foot">
-      <span>数据：东方财富公开行情 · 生成于 ${esc((data.asOf || '').replace('T', ' '))}</span>
+      <span>数据：${data.degraded ? '降级行情源（行业/资金字段可能缺失）' : '东方财富公开行情'} · 生成于 ${esc((data.asOf || '').replace('T', ' '))}</span>
       <button class="ghost-btn" data-action="watch-detail" data-code="${esc(quote.code)}">${icon('plus')} 加入自选</button>
     </div>`;
 

@@ -26,6 +26,7 @@ from app.config import (
     now_cn,
 )
 from app.providers.eastmoney import EastmoneyProvider, normalize_code, secid_for
+from app.providers.fallback import FallbackProvider
 from app.services.indicators import (
     build_samples,
     chart_payload,
@@ -116,8 +117,8 @@ def rank_candidates(rows: list[dict], model_usable: bool) -> None:
 
 
 class MarketService:
-    def __init__(self, provider: EastmoneyProvider | None = None):
-        self.provider = provider or EastmoneyProvider()
+    def __init__(self, provider=None):
+        self.provider = provider or FallbackProvider()
         self.cache = DiskJsonCache(KLINE_CACHE_DIR)
         self.snapshot_cache = DiskJsonCache(CACHE_DIR)
         self.watchlist = WatchlistStore(WATCHLIST_FILE)
@@ -176,6 +177,41 @@ class MarketService:
         self._snapshot_meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
         return True
 
+    @staticmethod
+    def _merge_cached_fields(rows: list[dict], previous: list[dict]) -> int:
+        fields = (
+            "industry",
+            "main_inflow",
+            "main_inflow_ratio",
+            "change60",
+            "volume_ratio",
+            "pe",
+            "pb",
+            "market_cap",
+            "float_cap",
+        )
+        old_by_code = {row.get("code"): row for row in previous if row.get("code")}
+        enriched = 0
+        for row in rows:
+            old = old_by_code.get(row.get("code"))
+            if not old:
+                continue
+            changed = False
+            for field in fields:
+                if row.get(field) in (None, 0, 0.0, "未分类") and old.get(field) not in (
+                    None,
+                    0,
+                    0.0,
+                    "未分类",
+                ):
+                    row[field] = old[field]
+                    changed = True
+            if changed:
+                row["source"] = "sina+eastmoney_fields"
+                row["degraded"] = True
+                enriched += 1
+        return enriched
+
     def get_snapshot(self, force: bool = False) -> list[dict]:
         with self._snapshot_lock:
             now = time.time()
@@ -192,14 +228,25 @@ class MarketService:
                 and now - self._snapshot_failed_at < 60
             ):
                 return self._snapshot
+            previous_payload, _ = self.snapshot_cache.read("snapshot", 10**9)
+            previous_rows = (
+                previous_payload.get("rows")
+                if isinstance(previous_payload, dict)
+                else []
+            )
             try:
                 rows = self.provider.fetch_snapshot()
+                self._snapshot_meta = dict(getattr(self.provider, "last_snapshot_meta", {}))
+                if self._snapshot_meta.get("fallback") and isinstance(previous_rows, list):
+                    enriched = self._merge_cached_fields(rows, previous_rows)
+                    if enriched:
+                        self._snapshot_meta["source_label"] = "新浪财经 + 东财字段（降级）"
+                        self._snapshot_meta["enriched_codes"] = enriched
                 deduped = {row["code"]: row for row in rows}
                 self._snapshot = list(deduped.values())
                 self._snapshot_at = time.time()
                 self._snapshot_stale = False
                 self._snapshot_failed_at = 0.0
-                self._snapshot_meta = dict(getattr(self.provider, "last_snapshot_meta", {}))
                 self._errors = [error for error in self._errors if not error.startswith("snapshot:")]
                 try:
                     self.snapshot_cache.write("snapshot", self._snapshot_cache_payload())
@@ -302,6 +349,45 @@ class MarketService:
                     laggards = laggard_future.result()
                 except Exception:  # noqa: BLE001
                     laggards = []
+            if not leaders and not laggards:
+                # A fallback snapshot may still carry an industry column from
+                # the previous Eastmoney cache. Build a degraded breadth table
+                # instead of showing "no sector data" when the sector endpoint
+                # itself is blocked.
+                snap = self.get_snapshot()
+                groups: dict[str, list[dict]] = {}
+                for row in snap:
+                    industry = row.get("industry")
+                    if not industry or industry == "未分类":
+                        continue
+                    if (row.get("amount") or 0) <= 0:
+                        continue
+                    groups.setdefault(industry, []).append(row)
+                synthetic = []
+                for industry, rows in groups.items():
+                    avg = sum(float(item.get("pct") or 0) for item in rows) / len(rows)
+                    leader = max(rows, key=lambda item: float(item.get("pct") or 0))
+                    synthetic.append(
+                        {
+                            "code": industry,
+                            "name": industry,
+                            "pct": round(avg, 2),
+                            "price": None,
+                            "main_inflow": round(
+                                sum(float(item.get("main_inflow") or 0) for item in rows), 2
+                            ),
+                            "up_count": sum(1 for item in rows if (item.get("pct") or 0) > 0),
+                            "down_count": sum(1 for item in rows if (item.get("pct") or 0) < 0),
+                            "leader": leader.get("name"),
+                            "leader_code": leader.get("code"),
+                            "leader_pct": leader.get("pct"),
+                            "degraded": True,
+                        }
+                    )
+                synthetic.sort(key=lambda item: item["pct"], reverse=True)
+                leaders = synthetic[:10]
+                laggards = synthetic[-5:]
+                self._snapshot_meta["sectors_degraded"] = True
             seen = set()
             clean_leaders = []
             for item in leaders:
@@ -520,13 +606,16 @@ class MarketService:
                 "sectors": sectors,
                 "movers": self._movers(snap),
                 "dataQuality": {
-                    "source": "东方财富公开行情",
+                    "source": self._snapshot_meta.get("source_label")
+                    or getattr(self.provider, "source_name", "东方财富公开行情"),
                     "snapshotAgeSec": round(max(0.0, time.time() - self._snapshot_at), 1),
                     "stale": self._snapshot_stale,
                     "universe": breadth["universe"],
                     "quoteDate": latest_bar or today,
                     "coverage": self._snapshot_meta.get("coverage"),
                     "pageFailures": self._snapshot_meta.get("page_failures"),
+                    "fallback": bool(self._snapshot_meta.get("fallback")),
+                    "degraded": bool(self._snapshot_meta.get("fallback")),
                     "error": index_error
                     or (
                         "行情源暂不可用，已展示最近一次成功快照"
@@ -709,10 +798,11 @@ class MarketService:
             industry_count: dict[str, int] = {}
             for card in all_cards:
                 industry = card["industry"]
-                if industry_count.get(industry, 0) >= 2:
+                if industry != "未分类" and industry_count.get(industry, 0) >= 2:
                     continue
                 candidates.append(card)
-                industry_count[industry] = industry_count.get(industry, 0) + 1
+                if industry != "未分类":
+                    industry_count[industry] = industry_count.get(industry, 0) + 1
                 if len(candidates) >= 8:
                     break
 
@@ -847,10 +937,11 @@ class MarketService:
         industry_count: dict[str, int] = {}
         for item in pool:
             industry = item["industry"]
-            if industry_count.get(industry, 0) >= 6:
+            if industry != "未分类" and industry_count.get(industry, 0) >= 6:
                 continue
             selected.append(item)
-            industry_count[industry] = industry_count.get(industry, 0) + 1
+            if industry != "未分类":
+                industry_count[industry] = industry_count.get(industry, 0) + 1
             if len(selected) >= limit:
                 break
         if len(selected) < 20:
@@ -1046,10 +1137,11 @@ class MarketService:
         industry_count: dict[str, int] = {}
         for row in rows:
             industry = row["industry"]
-            if industry_count.get(industry, 0) >= profile["max_per_industry"]:
+            if industry != "未分类" and industry_count.get(industry, 0) >= profile["max_per_industry"]:
                 continue
             selected.append(row)
-            industry_count[industry] = industry_count.get(industry, 0) + 1
+            if industry != "未分类":
+                industry_count[industry] = industry_count.get(industry, 0) + 1
             if len(selected) >= profile["max_picks"]:
                 break
 
@@ -1244,6 +1336,8 @@ class MarketService:
             "chart": chart,
             "spark": [round(bar["close"], 2) for bar in bars[-30:]],
             "profile": PROFILES[profile_key],
+            "source": quote.get("source", "eastmoney"),
+            "degraded": bool(quote.get("degraded")),
             "disclaimer": DISCLAIMER,
         }
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 APP_NAME = "A股雷达"
 APP_NAME_EN = "StockLens"
-APP_VERSION = "0.6.2"
+APP_VERSION = "0.7.0"
 APP_TAGLINE = "用公开数据做可解释的观察，不预测确定的未来"
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
